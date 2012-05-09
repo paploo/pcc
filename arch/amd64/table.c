@@ -1,4 +1,4 @@
-/*	$Id: table.c,v 1.45 2011/02/18 17:08:31 ragge Exp $	*/
+/*	$Id: table.c,v 1.50 2011/12/13 17:46:18 ragge Exp $	*/
 /*
  * Copyright (c) 2008 Michael Shalayeff
  * Copyright (c) 2008 Anders Magnusson (ragge@ludd.ltu.se).
@@ -55,7 +55,7 @@ struct optab table[] = {
 		"", },
 
 { PCONV,	INAREG,
-	SAREG|SOREG|SNAME,	TUWORD,
+	SAREG|SOREG|SNAME,	TWORD,
 	SAREG,	TPOINT,
 		NASL|NAREG,	RESC1,
 		"	movl AL,Z1\n", },/* amd64 zero-extends 32-bit movl */
@@ -417,7 +417,7 @@ struct optab table[] = {
 		"	fnstcw 4(%rsp)\n"
 		"	movb $12,1(%rsp)\n"
 		"	fldcw (%rsp)\n"
-		"	fistpl 8(%rsp)\n"
+		"	fistpq 8(%rsp)\n"
 		"	movl 8(%rsp),A1\n"
 		"	fldcw 4(%rsp)\n"
 		"	addq $16,%rsp\n", },
@@ -574,6 +574,12 @@ struct optab table[] = {
 	SANY,	TANY,
 		NAREG|NASL,	RESC1,	/* should be 0 */
 		"ZP	call CL\nZC", },
+
+{ STCALL,	FOREFF,
+	SNAME|SAREG,	TANY,
+	SANY,	TANY,
+		NAREG|NASL,	0,	/* should be 0 */
+		"ZP	call *AL\nZC", },
 
 { STCALL,	INAREG,
 	SNAME|SAREG,	TANY,
@@ -1025,58 +1031,6 @@ struct optab table[] = {
 		0,	RDEST,
 		"	movb AR,AL\n", },
 
-{ ASSIGN,	FOREFF|INAREG,
-	SFLD,		TCHAR|TUCHAR,
-	SAREG|SCON,	TCHAR|TUCHAR,
-		NAREG*2,	RDEST,
-		"	movb AR,A2\n"
-		"	movzbl A2,ZN\n"
-		"	andl $N,AL\n"
-		"	sall $H,ZN\n"
-		"	andl $M,ZN\n"
-		"	orl ZN,AL\n"
-		"F	movb AR,AD\n"
-		"FZE", },
-
-{ ASSIGN,	FOREFF|INAREG,
-	SFLD,		TSHORT|TUSHORT,
-	SAREG|SCON,	TSHORT|TUSHORT,
-		NAREG,	RDEST,
-		"	movw AR,A1\n"
-		"	movzwl A1,ZN\n"
-		"	andl $N,AL\n"
-		"	sall $H,ZN\n"
-		"	andl $M,ZN\n"
-		"	orl ZN,AL\n"
-		"F	movw AR,AD\n"
-		"FZE", },
-
-{ ASSIGN,	FOREFF|INAREG,
-	SFLD,		TWORD,
-	SAREG|SNAME|SOREG|SCON,	TWORD,
-		NAREG,	RDEST,
-		"	movl AR,A1\n"
-		"	andl $N,AL\n"
-		"	sall $H,A1\n"
-		"	andl $M,A1\n"
-		"	orl A1,AL\n"
-		"F	movl AR,AD\n"
-		"FZE", },
-
-{ ASSIGN,	FOREFF|INAREG,
-	SFLD,		TLL,
-	SAREG|SNAME|SOREG|SCON,	TLL,
-		NAREG*2,	RDEST,
-		"	movq AR,A1\n"
-		"	movq $N,A2\n"
-		"	andq A2,AL\n"
-		"	salq $H,A1\n"
-		"	movq $M,A2\n"
-		"	andq A2,A1\n"
-		"	orq A1,AL\n"
-		"F	movq AR,AD\n"
-		"FZE", },
-
 { ASSIGN,	INBREG|FOREFF,
 	SBREG,			TFLOAT|TDOUBLE,
 	SBREG|SOREG|SNAME,	TFLOAT|TDOUBLE,
@@ -1131,8 +1085,8 @@ struct optab table[] = {
 { STASG,	INAREG|FOREFF,
 	SOREG|SNAME,	TANY,
 	SAREG,		TPTRTO|TANY,
-		NSPECIAL,	RDEST,
-		"ZQ", },
+		NSPECIAL|NAREG,	RDEST,
+		"F	movq AR,A1\nZQF	movq A1,AR\n", },
 
 /*
  * DIV/MOD/MUL 
@@ -1493,6 +1447,20 @@ struct optab table[] = {
 	SOREG|SNAME,	TLDOUBLE,
 		NCREG,	RESC1,
 		"	fldt AL\n", },
+
+/* load float 0.0 */
+{ FCON,		INBREG,
+	SANY,		TFLOAT|TDOUBLE,
+	SANY,		TFLOAT|TDOUBLE,
+		NBREG,	RESC1,
+		"	xorpZf A1,A1\n", },
+
+{ FCON,		INCREG,
+	SANY,		TLDOUBLE,
+	SANY,		TLDOUBLE,
+		NCREG,	RESC1,
+		"	fldz\n", },
+
 
 /*
  * Negate a word.

@@ -1,4 +1,4 @@
-#	$Id: Makefile.in,v 1.30 2011/01/16 11:59:37 ragge Exp $
+#	$Id: Makefile.in,v 1.40 2012/03/15 09:22:12 plunky Exp $
 #
 # Makefile.in for cpp
 #
@@ -7,8 +7,6 @@ srcdir=@srcdir@
 top_srcdir=@top_srcdir@
 builddir=@builddir@
 top_builddir=@top_builddir@
-XFL=-DCPP_DEBUG
-
 prefix = @prefix@
 exec_prefix = @exec_prefix@
 bindir = @bindir@
@@ -19,13 +17,16 @@ strip = @strip@
 CC = @CC@
 EXEEXT = @EXEEXT@
 CFLAGS = @CFLAGS@ @ADD_CFLAGS@
-CPPFLAGS = @CPPFLAGS@ @ADD_CPPFLAGS@ ${XFL} -I${srcdir} -I${top_builddir} -I${builddir} -I${MIPDIR} -I${MDIR}
+CPPFLAGS = @CPPFLAGS@ @ADD_CPPFLAGS@ \
+	-I$(srcdir) -I$(top_builddir) -I$(builddir) -I$(MIPDIR) -I$(MDIR)
 LIBS = @LIBS@
 LDFLAGS = @LDFLAGS@
 LEX = @LEX@
 YACC = @YACC@
+YFLAGS = @YFLAGS@
 INSTALL = @INSTALL@
 INSTALL_PROGRAM = @INSTALL_PROGRAM@
+INSTALL_DATA = @INSTALL_DATA@
 TARGMACH = @targmach@
 
 OBJS=cpp.o cpy.o token.o compat.o
@@ -38,21 +39,21 @@ MDIR=$(top_srcdir)/arch/$(TARGMACH)
 all: ${DEST}
 
 ${DEST}: $(OBJS) $(HEADERS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
+	$(CC) $(LDFLAGS) $(OBJS) -o $@ $(LIBS)
 
 .c.o:
-	$(CC) $(DEFS) $(CPPFLAGS) $(CFLAGS) -c $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 .l.o:
 	$(LEX) $(LFLAGS) $<
-	$(CC) $(DEFS) $(CPPFLAGS) $(CFLAGS) -c -o $@ lex.yy.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ lex.yy.c
 
 .y.o:
 	$(YACC) -d $(YFLAGS) $<
-	$(CC) $(DEFS) $(CPPFLAGS) $(CFLAGS) -c -o $@ y.tab.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ y.tab.c
 
 compat.o: $(MIPDIR)/compat.c
-	$(CC) $(DEFS) $(CPPFLAGS) $(CFLAGS) -c -o $@ $(MIPDIR)/compat.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $(MIPDIR)/compat.c
 
 $(OBJS): $(HEADERS)
 
@@ -95,11 +96,11 @@ install:
 		strip ${DESTDIR}${libexecdir}/${DEST} ;	\
 		echo strip ${DESTDIR}${libexecdir}/${DEST} ;	\
 	fi
-	test -z "${DESTDIR}$(mandir)/man1" || mkdir -p "${DESTDIR}$(mandir)/man1"       
-	${INSTALL} $(srcdir)/cpp.1 ${DESTDIR}${mandir}/man1/$(DEST).1
+	test -z "${DESTDIR}$(mandir)/man1" || mkdir -p "${DESTDIR}$(mandir)/man1"
+	${INSTALL_DATA} $(srcdir)/cpp.1 ${DESTDIR}${mandir}/man1/$(DEST).1
 
 clean:
-	/bin/rm -f $(OBJS) $(DEST) lex.yy.c y.tab.[ch] tests/run*
+	rm -f $(OBJS) $(DEST) lex.yy.c y.tab.[ch] tests/run*
 
 distclean: clean
-	/bin/rm -f Makefile
+	rm -f Makefile

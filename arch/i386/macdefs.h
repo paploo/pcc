@@ -1,4 +1,4 @@
-/*	$Id: macdefs.h,v 1.77 2011/02/04 15:08:58 ragge Exp $	*/
+/*	$Id: macdefs.h,v 1.83 2011/06/23 13:41:25 ragge Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -98,7 +98,7 @@
 
 /* Default char is signed */
 #undef	CHAR_UNSIGNED
-#define	BOOL_TYPE	CHAR	/* what used to store _Bool */
+#define	BOOL_TYPE	UCHAR	/* what used to store _Bool */
 
 /*
  * Use large-enough types.
@@ -127,15 +127,14 @@ typedef long long OFFSZ;
 
 #ifdef MACHOABI
 #define STAB_LINE_ABSOLUTE	/* S_LINE fields use absolute addresses */
+#define	MYALIGN			/* user power-of-2 alignment */
 #endif
 
 #define BACKAUTO 		/* stack grows negatively for automatics */
 #define BACKTEMP 		/* stack grows negatively for temporaries */
 
 #undef	FIELDOPS		/* no bit-field instructions */
-#define	RTOLBYTES		/* bytes are numbered right to left */
-
-#define ENUMSIZE(high,low) INT	/* enums are always stored in full int */
+#define TARGET_ENDIAN TARGET_LE
 
 #define FINDMOPS	/* i386 has instructions that modifies memory */
 #define	CC_DIV_0	/* division by zero is safe in the compiler */
@@ -319,7 +318,6 @@ int COLORMAP(int c, int *r);
  * i386-specific symbol table flags.
  */
 #define	SSECTION	SLOCAL1
-#define	STLS		SLOCAL2
 #define SSTDCALL	SLOCAL2	
 #define SDLLINDIRECT	SLOCAL3
 

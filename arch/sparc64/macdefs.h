@@ -1,3 +1,5 @@
+/*	$Id: macdefs.h,v 1.15 2011/06/05 10:19:25 ragge Exp $	*/
+
 /*
  * Copyright (c) 2008 David Crawshaw <david@zentus.com>
  * 
@@ -100,9 +102,8 @@ typedef long long OFFSZ;
 #define BACKTEMP 		/* Stack grows negatively for temporaries. */
 
 #undef	FIELDOPS
-#define RTOLBYTES
+#define TARGET_ENDIAN TARGET_BE
 
-#define ENUMSIZE(high,low) INT
 #define BYTEOFF(x) 	((x)&03)
 #define BITOOR(x)	(x)
 

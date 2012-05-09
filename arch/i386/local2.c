@@ -1,4 +1,4 @@
-/*	$Id: local2.c,v 1.154.2.2 2011/02/26 07:17:34 ragge Exp $	*/
+/*	$Id: local2.c,v 1.167 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -30,7 +30,7 @@
 # include <ctype.h>
 # include <string.h>
 
-#if defined(PECOFFABI) || defined(MACHOABI)
+#if defined(PECOFFABI) || defined(MACHOABI) || defined(AOUTABI)
 #define EXPREFIX	"_"
 #else
 #define EXPREFIX	""
@@ -183,7 +183,7 @@ hopcode(int f, int o)
  * Return type size in bytes.  Used by R2REGS, arg 2 to offset().
  */
 int
-tlen(p) NODE *p;
+tlen(NODE *p)
 {
 	switch(p->n_type) {
 		case CHAR:
@@ -270,110 +270,8 @@ twollcomp(NODE *p)
 int
 fldexpand(NODE *p, int cookie, char **cp)
 {
-	CONSZ val;
-
-	if (p->n_op == ASSIGN)
-		p = p->n_left;
-	switch (**cp) {
-	case 'S':
-		printf("%d", UPKFSZ(p->n_rval));
-		break;
-	case 'H':
-		printf("%d", UPKFOFF(p->n_rval));
-		break;
-	case 'M':
-	case 'N':
-		val = (CONSZ)1 << UPKFSZ(p->n_rval);
-		--val;
-		val <<= UPKFOFF(p->n_rval);
-		printf("0x%llx", (**cp == 'M' ? val : ~val) & 0xffffffff);
-		break;
-	default:
-		comperr("fldexpand");
-	}
-	return 1;
-}
-
-static void
-bfext(NODE *p)
-{
-	int ch = 0, sz = 0;
-
-	if (ISUNSIGNED(p->n_right->n_type))
-		return;
-	switch (p->n_right->n_type) {
-	case CHAR:
-		ch = 'b';
-		sz = 8;
-		break;
-	case SHORT:
-		ch = 'w';
-		sz = 16;
-		break;
-	case INT:
-	case LONG:
-		ch = 'l';
-		sz = 32;
-		break;
-	default:
-		comperr("bfext");
-	}
-
-	sz -= UPKFSZ(p->n_left->n_rval);
-	printf("\tshl%c $%d,", ch, sz);
-	adrput(stdout, getlr(p, 'D'));
-	printf("\n\tsar%c $%d,", ch, sz);
-	adrput(stdout, getlr(p, 'D'));
-	printf("\n");
-}
-
-/* long long bitfield assign */
-static void
-llbf(NODE *p)
-{
-	NODE *q;
-	char buf[50];
-	CONSZ m, n;
-	int o, s;
-	int ml, mh, nl, nh;
-
-	q = p->n_left;
-	o = UPKFOFF(q->n_rval);
-	s = UPKFSZ(q->n_rval);
-	m = (CONSZ)1 << (s-1);
-	m--;
-	m = (m << 1) | 1;
-	m <<= o;
-	n = ~m;
-
-	ml = m & 0xffffffff;
-	nl = n & 0xffffffff;
-	mh = (m >> 32) & 0xffffffff;
-	nh = (n >> 32) & 0xffffffff;
-
-#define	S(...)	snprintf(buf, sizeof buf, __VA_ARGS__); expand(p, 0, buf)
-
-	if (o < 32) { /* lower 32 buts */
-		S("	andl $0x%x,AL\n", nl);
-		S("	movl AR,A1\n");
-		S("	sall $%d,A1\n", o);
-		S("	andl $0x%x,A1\n", ml);
-		S("	orl A1,AL\n");
-	}
-	if ((o+s) >= 32) { /* upper 32 bits */
-		S("	andl $0x%x,UL\n", nh);
-		S("	movl UR,A1\n");
-		S("	sall $%d,A1\n", o);
-		S("	movl AR,U1\n");
-		S("	shrl $%d,U1\n", 32-o);
-		S("	orl U1,A1\n");
-		S("	andl $0x%x,A1\n", mh);
-		S("	orl A1,UL\n");
-	}
-#undef S
-//	fwalk(p, e2print, 0);
-
-	
+	comperr("fldexpand");
+	return 0;
 }
 
 /*
@@ -400,13 +298,13 @@ starg(NODE *p)
 	}
 	fprintf(fp, "	addl $16,%%esp\n");
 #else
+	NODE *q = p->n_left;
+
 	fprintf(fp, "	subl $%d,%%esp\n", (p->n_stsize+3) & ~3);
-	fprintf(fp, "	pushl $%d\n", p->n_stsize);
-	expand(p, 0, "	pushl AL\n");
-	expand(p, 0, "	leal 8(%esp),A1\n");
-	expand(p, 0, "	pushl A1\n");
-	fprintf(fp, "	call %s%s\n", EXPREFIX "memcpy", kflag ? "@PLT" : "");
-	fprintf(fp, "	addl $12,%%esp\n");
+	p->n_left = mklnode(OREG, 0, ESP, INT);
+	zzzcode(p, 'Q');
+	tfree(p->n_left);
+	p->n_left = q;
 #endif
 }
 
@@ -419,12 +317,12 @@ fcomp(NODE *p)
 	static char *fpcb[] = { "jz", "jnz", "jbe", "jc", "jnc", "ja" };
 
 	if ((p->n_su & DORIGHT) == 0)
-		expand(p, 0, "  fxch\n");
-	expand(p, 0, "  fucomip %st(1),%st\n");	/* emit compare insn  */
-	expand(p, 0, "  fstp %st(0)\n");	/* pop fromstack */
+		expand(p, 0, "\tfxch\n");
+	expand(p, 0, "\tfucomip %st(1),%st\n");	/* emit compare insn  */
+	expand(p, 0, "\tfstp %st(0)\n");	/* pop fromstack */
 
 	if (p->n_op == NE || p->n_op == GT || p->n_op == GE)
-		expand(p, 0, "  jp LC\n");
+		expand(p, 0, "\tjp LC\n");
 	else if (p->n_op == EQ)
 		printf("\tjp 1f\n");
 	printf("	%s ", fpcb[p->n_op - EQ]);
@@ -439,6 +337,7 @@ fcomp(NODE *p)
 static void
 ulltofp(NODE *p)
 {
+#if defined(ELFABI) || defined(PECOFFABI)
 	static int loadlab;
 	int jmplab;
 
@@ -454,9 +353,12 @@ ulltofp(NODE *p)
 	expand(p, 0, "	addl $8,%esp\n");
 	expand(p, 0, "	cmpl $0,UL\n");
 	printf("	jge " LABFMT "\n", jmplab);
-	printf("	fldt " LABFMT "\n", loadlab);
+	printf("	fldt " LABFMT "%s\n", loadlab, kflag ? "@GOTOFF" : "");
 	printf("	faddp %%st,%%st(1)\n");
 	printf(LABFMT ":\n", jmplab);
+#else
+#error incomplete implementation
+#endif
 }
 
 static int
@@ -522,7 +424,7 @@ void
 zzzcode(NODE *p, int c)
 {
 	NODE *l;
-	int pr, lr, s;
+	int pr, lr;
 	char *ch;
 
 	switch (c) {
@@ -532,24 +434,6 @@ zzzcode(NODE *p, int c)
 				printf("	fxch\n");
 			else
 				printf("r");
-		}
-		break;
-
-	case 'B': { /* packed bitfield ops */
-		int sz, off;
-
-		l = p->n_left;
-		sz = UPKFSZ(l->n_rval);
-		off = UPKFOFF(l->n_rval);
-		if (sz + off <= SZINT)
-			break;
-		/* lower already printed */
-		expand(p, INAREG, "	movl AR,A1\n");
-		expand(p, INAREG, "	andl $M,UL\n");
-		printf("	sarl $%d,", SZINT-off);
-		expand(p, INAREG, "A1\n");
-		expand(p, INAREG, "	andl $N,A1\n");
-		expand(p, INAREG, "	orl A1,UL\n");
 		}
 		break;
 
@@ -571,10 +455,6 @@ zzzcode(NODE *p, int c)
 
 	case 'D': /* Long long comparision */
 		twollcomp(p);
-		break;
-
-	case 'E': /* Perform bitfield sign-extension */
-		bfext(p);
 		break;
 
 	case 'F': /* Structure argument */
@@ -601,10 +481,6 @@ zzzcode(NODE *p, int c)
 
 	case 'K': /* Load longlong reg into another reg */
 		rmove(regno(p), DECRA(p->n_reg, 0), LONGLONG);
-		break;
-
-	case 'L': /* long long bitfield assign */
-		llbf(p);
 		break;
 
 	case 'M': /* Output sconv move, if needed */
@@ -727,10 +603,14 @@ zzzcode(NODE *p, int c)
 				break;
 			}
 			/* Must go via stack */
+			expand(p, INAREG, "\tmovl AL,A2\n");
+			expand(p, INBREG, "\tmovb A2,A1\n");
+#ifdef notdef
+			/* cannot use freetemp() in instruction emission */
 			s = BITOOR(freetemp(1));
 			printf("\tmovl %%e%ci,%d(%%ebp)\n", rnames[lr][1], s);
 			printf("\tmovb %d(%%ebp),%s\n", s, rnames[pr]);
-//			comperr("SCONV1 %s->%s", rnames[lr], rnames[pr]);
+#endif
 			break;
 
 		case SHORT:
@@ -764,13 +644,6 @@ zzzcode(NODE *p, int c)
 	}
 }
 
-/*ARGSUSED*/
-int
-rewfld(NODE *p)
-{
-	return(1);
-}
-
 int canaddr(NODE *);
 int
 canaddr(NODE *p)
@@ -789,13 +662,8 @@ canaddr(NODE *p)
 int
 flshape(NODE *p)
 {
-	int o = p->n_op;
-
-	if (o == OREG || o == REG || o == NAME)
-		return SRDIR; /* Direct match */
-	if (o == UMUL && shumul(p->n_left, SOREG))
-		return SROREG; /* Convert into oreg */
-	return SRREG; /* put it into a register */
+	comperr("flshape");
+	return 0;
 }
 
 /* INTEMP shapes must not contain any temporary registers */
@@ -875,9 +743,6 @@ void
 upput(NODE *p, int size)
 {
 
-	if (p->n_op == FLD)
-		p = p->n_left;
-
 	size /= SZCHAR;
 	switch (p->n_op) {
 	case REG:
@@ -903,9 +768,6 @@ adrput(FILE *io, NODE *p)
 {
 	int r;
 	/* output an address, with offsets, from p */
-
-	if (p->n_op == FLD)
-		p = p->n_left;
 
 	switch (p->n_op) {
 
@@ -1339,7 +1201,6 @@ lastcall(NODE *p)
 	if (kflag)
 		size -= 4;
 #endif
-
 	
 #if defined(MACHOABI)
 	int newsize = (size + 15) & ~15;	/* stack alignment */
@@ -1408,7 +1269,8 @@ myxasm(struct interpass *ip, NODE *p)
 	TWORD t;
 	char *w;
 	int reg;
-	int c, cw, v;
+	int c, cw;
+	CONSZ v;
 
 	cw = xasmcode(p->n_name);
 	if (cw & (XASMASG|XASMINOUT))
@@ -1458,8 +1320,13 @@ myxasm(struct interpass *ip, NODE *p)
 	case 'L':
 	case 'M':
 	case 'N':
-		if (p->n_left->n_op != ICON)
+		if (p->n_left->n_op != ICON) {
+			if ((c = XASMVAL1(cw)) != 0) {
+				p->n_name++;
+				return 0; /* Try again */
+			}
 			uerror("xasm arg not constant");
+		}
 		v = p->n_left->n_lval;
 		if ((c == 'K' && v < -128) ||
 		    (c == 'L' && v != 0xff && v != 0xffff) ||

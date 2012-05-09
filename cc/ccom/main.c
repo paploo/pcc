@@ -1,4 +1,4 @@
-/*	$Id: main.c,v 1.106 2011/01/22 22:08:23 ragge Exp $	*/
+/*	$Id: main.c,v 1.118 2012/03/22 18:51:40 plunky Exp $	*/
 
 /*
  * Copyright (c) 2002 Anders Magnusson. All rights reserved.
@@ -38,57 +38,16 @@
 #include "pass1.h"
 #include "pass2.h"
 
-int sflag, nflag, oflag, kflag, pflag;
-int lflag, odebug, rdebug, s2debug, udebug, x2debug;
-#if !defined(MULTIPASS) || defined(PASST)
-int iTflag, oTflag;
-#endif
-int xdebug, sdebug, gflag, c2debug, pdebug, g2debug;
-#ifdef CHAR_UNSIGNED
-int funsigned_char = 1;
-#else
-int funsigned_char = 0;
-#endif
+int bdebug, ddebug, edebug, idebug, ndebug;
+int odebug, pdebug, sdebug, tdebug, xdebug;
+int b2debug, c2debug, e2debug, f2debug, g2debug, o2debug;
+int r2debug, s2debug, t2debug, u2debug, x2debug;
+int gflag, kflag;
+int pflag, sflag;
 int sspflag;
-int xssaflag, xtailcallflag, xtemps, xdeljumps, xdce, xinline, xccp;
-
-int e2debug, t2debug, f2debug, b2debug;
-
-/*
- * Ensure that this struct matches defines in manifest.h!
- */
-const struct attr2 btattr[32] = {
-#define BTA(x)	{ 0, ATTR_BASETYP, { { SZ##x }, { AL##x }, }, },
-	{ 0 },	/* UNDEF */
-	{ 0 },	/* FARG */
-	BTA(CHAR)
-	BTA(CHAR)
-	BTA(SHORT)
-	BTA(SHORT)
-	BTA(INT)
-	BTA(INT)
-	BTA(LONG)
-	BTA(LONG)
-	BTA(LONGLONG)
-	BTA(LONGLONG)
-	BTA(FLOAT)
-	BTA(DOUBLE)
-	BTA(LDOUBLE)
-	{ 0 },	/* STRTY */
-	{ 0 },	/* UNIONTY */
-	{ 0 },	/* unused */
-	{ 0 },	/* unused */
-	{ 0, ATTR_BASETYP },	/* VOID */
-	{ 0 },	/* SIGNED */
-	BTA(BOOL)
-	BTA(FLOAT)	/* FIMAG */
-	BTA(DOUBLE)	/* IMAG */
-	BTA(LDOUBLE)	/* LIMAG */
-	BTA(FLOAT)	/* FCOMPLEX */
-	BTA(DOUBLE)	/* COMPLEX */
-	BTA(LDOUBLE)	/* LCOMPLEX */
-};
-
+int xssa, xtailcall, xtemps, xdeljumps, xdce, xinline, xccp, xgnu89, xgnu99;
+int xuchar;
+int freestanding;
 char *prgname;
 
 static void prtstats(void);
@@ -114,6 +73,35 @@ segvcatch(int a)
 }
 
 static void
+xopt(char *str)
+{
+	if (strcmp(str, "ssa") == 0)
+		xssa++;
+	else if (strcmp(str, "tailcall") == 0)
+		xtailcall++;
+	else if (strcmp(str, "temps") == 0)
+		xtemps++;
+	else if (strcmp(str, "deljumps") == 0)
+		xdeljumps++;
+	else if (strcmp(str, "dce") == 0)
+		xdce++;
+	else if (strcmp(str, "inline") == 0)
+		xinline++;
+	else if (strcmp(str, "ccp") == 0)
+		xccp++;
+	else if (strcmp(str, "gnu89") == 0)
+		xgnu89++;
+	else if (strcmp(str, "gnu99") == 0)
+		xgnu99++;
+	else if (strcmp(str, "uchar") == 0)
+		xuchar++;
+	else {
+		fprintf(stderr, "unknown -x option '%s'\n", str);
+		usage();
+	}
+}
+
+static void
 fflags(char *str)
 {
 	int flagval = 1;
@@ -123,18 +111,16 @@ fflags(char *str)
 		flagval = 0;
 	}
 
-	if (strcmp(str, "signed-char") == 0)
-		funsigned_char = !flagval;
-	else if (strcmp(str, "unsigned-char") == 0)
-		funsigned_char = flagval;
-	else if (strcmp(str, "stack-protector") == 0)
+	if (strcmp(str, "stack-protector") == 0)
 		sspflag = flagval;
 	else if (strcmp(str, "stack-protector-all") == 0)
 		sspflag = flagval;
 	else if (strncmp(str, "pack-struct", 11) == 0)
 		pragma_allpacked = (strlen(str) > 12 ? atoi(str+12) : 1);
+	else if (strcmp(str, "freestanding") == 0)
+		freestanding = flagval;
 	else {
-		fprintf(stderr, "unrecognised option '%s'\n", str);
+		fprintf(stderr, "unknown -f option '%s'\n", str);
 		usage();
 	}
 }
@@ -143,7 +129,6 @@ fflags(char *str)
 int
 main(int argc, char *argv[])
 {
-
 	int ch;
 
 #ifdef TIMING
@@ -154,97 +139,86 @@ main(int argc, char *argv[])
 
 	prgname = argv[0];
 
-	while ((ch = getopt(argc, argv, "OT:VW:X:Z:f:gklm:psvwx:")) != -1)
+	while ((ch = getopt(argc, argv, "OT:VW:X:Z:f:gkm:psvwx:")) != -1) {
 		switch (ch) {
 #if !defined(MULTIPASS) || defined(PASS1)
-		case 'X':
+		case 'X':	/* pass1 debugging */
 			while (*optarg)
 				switch (*optarg++) {
-				case 'd': ++ddebug; break; /* declarations */
-				case 'i': ++idebug; break; /* initializations */
 				case 'b': ++bdebug; break; /* buildtree */
-				case 't': ++tdebug; break; /* type match */
+				case 'd': ++ddebug; break; /* declarations */
 				case 'e': ++edebug; break; /* pass1 exit */
-				case 'x': ++xdebug; break; /* MD code */
-				case 's': ++sdebug; break; /* inline */
-				case 'n': ++nflag; break;  /* node alloc */
-				case 'o': ++oflag; break;  /* optim */
+				case 'i': ++idebug; break; /* initializations */
+				case 'n': ++ndebug; break; /* node allocation */
+				case 'o': ++odebug; break; /* optim */
 				case 'p': ++pdebug; break; /* prototype */
+				case 's': ++sdebug; break; /* inline */
+				case 't': ++tdebug; break; /* type match */
+				case 'x': ++xdebug; break; /* MD code */
 				default:
-					fprintf(stderr, "unknown X flag '%c'\n",
+					fprintf(stderr, "unknown -X flag '%c'\n",
 					    optarg[-1]);
 					exit(1);
 				}
-#endif
 			break;
-#if !defined(MULTIPASS) || defined(PASST)
-		case 'T':
-			while (*optarg)
-				switch (*optarg++) {
-				case 'i': ++iTflag; break;
-				case 'o': ++oTflag; break;
-				case 'n': ++nflag; break;
-				default:
-					fprintf(stderr, "unknown T flag '%c'\n",
-					    optarg[-1]);
-					exit(1);
-				}
 #endif
-			break;
 #if !defined(MULTIPASS) || defined(PASS2)
-		case 'Z':
+		case 'Z':	/* pass2 debugging */
 			while (*optarg)
 				switch (*optarg++) {
-				case 'f': /* instruction matching */
-					++f2debug;
-					break;
-				case 'e': /* print tree upon pass2 enter */
-					++e2debug;
-					break;
-				case 'o': ++odebug; break;
-				case 'r': /* register alloc/graph coloring */
-					++rdebug;
-					break;
 				case 'b': /* basic block and SSA building */
 					++b2debug;
 					break;
 				case 'c': /* code printout */
 					++c2debug;
 					break;
-				case 't': ++t2debug; break;
+				case 'e': /* print tree upon pass2 enter */
+					++e2debug;
+					break;
+				case 'f': /* instruction matching */
+					++f2debug;
+					break;
+				case 'g': /* print flow graphs */
+					++g2debug;
+					break;
+				case 'n': /* node allocation */
+					++ndebug;
+					break;
+				case 'o': /* instruction generator */
+					++o2debug;
+					break;
+				case 'r': /* register alloc/graph coloring */
+					++r2debug;
+					break;
 				case 's': /* shape matching */
 					++s2debug;
 					break;
+				case 't': /* type matching */
+					++t2debug;
+					break;
 				case 'u': /* Sethi-Ullman debugging */
-					++udebug;
+					++u2debug;
 					break;
-				case 'x': ++x2debug; break;
-				case 'g':  /* print flow graphs */
-					++g2debug;
+				case 'x': /* target specific */
+					++x2debug;
 					break;
-				case 'n': ++nflag; break;
 				default:
-					fprintf(stderr, "unknown Z flag '%c'\n",
+					fprintf(stderr, "unknown -Z flag '%c'\n",
 					    optarg[-1]);
 					exit(1);
 				}
-#endif
 			break;
-
+#endif
 		case 'f': /* Language */
 			fflags(optarg);
 			break;
 
 		case 'g': /* Debugging */
-			gflag = 1;
+			++gflag;
 			break;
 
 		case 'k': /* PIC code */
 			++kflag;
-			break;
-
-		case 'l': /* Linenos */
-			++lflag;
 			break;
 
 		case 'm': /* Target-specific */
@@ -252,7 +226,7 @@ main(int argc, char *argv[])
 			break;
 
 		case 'p': /* Profiling */
-			pflag = 1;
+			++pflag;
 			break;
 
 		case 's': /* Statistics */
@@ -263,24 +237,10 @@ main(int argc, char *argv[])
 			Wflags(optarg);
 			break;
 
-		case 'x': /* Different optimizations */
-			if (strcmp(optarg, "ssa") == 0)
-				xssaflag++;
-			else if (strcmp(optarg, "tailcall") == 0)
-				xtailcallflag++;
-			else if (strcmp(optarg, "temps") == 0)
-				xtemps++;
-			else if (strcmp(optarg, "deljumps") == 0)
-				xdeljumps++;
-			else if (strcmp(optarg, "dce") == 0)
-				xdce++;
-			else if (strcmp(optarg, "inline") == 0)
-				xinline++;
-			else if (strcmp(optarg, "ccp") == 0)
-				xccp++;
-			else
-				usage();
+		case 'x': /* Different settings */
+			xopt(optarg);
 			break;
+
 		case 'v':
 			printf("ccom: %s\n", VERSSTR);
 			break;
@@ -289,25 +249,26 @@ main(int argc, char *argv[])
 		default:
 			usage();
 		}
-		argc -= optind;
-		argv += optind;
+	}
+	argc -= optind;
+	argv += optind;
 
-		if (argc > 0 && strcmp(argv[0], "-") != 0) {
-			if (freopen(argv[0], "r", stdin) == NULL) {
-				fprintf(stderr, "open input file '%s':",
-				    argv[0]);
-				perror(NULL);
-				exit(1);
-			}
+	if (argc > 0 && strcmp(argv[0], "-") != 0) {
+		if (freopen(argv[0], "r", stdin) == NULL) {
+			fprintf(stderr, "open input file '%s':",
+			    argv[0]);
+			perror(NULL);
+			exit(1);
 		}
-		if (argc > 1 && strcmp(argv[1], "-") != 0) {
-			if (freopen(argv[1], "w", stdout) == NULL) {
-				fprintf(stderr, "open output file '%s':",
-				    argv[1]);
-				perror(NULL);
-				exit(1);
-			}
+	}
+	if (argc > 1 && strcmp(argv[1], "-") != 0) {
+		if (freopen(argv[1], "w", stdout) == NULL) {
+			fprintf(stderr, "open output file '%s':",
+			    argv[1]);
+			perror(NULL);
+			exit(1);
 		}
+	}
 
 	mkdope();
 	signal(SIGSEGV, segvcatch);
@@ -326,7 +287,7 @@ main(int argc, char *argv[])
 	bjobcode();
 #ifndef TARGET_VALIST
 	{
-		NODE *p = block(NAME, NIL, NIL, PTR|CHAR, NULL, MKAP(CHAR));
+		NODE *p = block(NAME, NIL, NIL, PTR|CHAR, NULL, 0);
 		struct symtab *sp = lookup(addname("__builtin_va_list"), 0);
 		p->n_sp = sp;
 		defid(p, TYPEDEF);
@@ -372,8 +333,8 @@ main(int argc, char *argv[])
 
 	if (sflag)
 		prtstats();
-	return(nerrors?1:0);
 
+	return(nerrors?1:0);
 }
 
 void

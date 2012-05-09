@@ -1,4 +1,4 @@
-/*	$Id: macdefs.h,v 1.17 2011/02/18 17:16:57 ragge Exp $	*/
+/*	$Id: macdefs.h,v 1.21 2011/06/23 13:41:25 ragge Exp $	*/
 /*
  * Copyright (c) 2008 Michael Shalayeff
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
@@ -91,7 +91,7 @@
 
 /* Default char is signed */
 #undef	CHAR_UNSIGNED
-#define	BOOL_TYPE	CHAR	/* what used to store _Bool */
+#define	BOOL_TYPE	UCHAR	/* what used to store _Bool */
 
 /*
  * Use large-enough types.
@@ -117,9 +117,7 @@ typedef long long OFFSZ;
 #define BACKTEMP 		/* stack grows negatively for temporaries */
 
 #undef	FIELDOPS		/* no bit-field instructions */
-#define	RTOLBYTES		/* bytes are numbered right to left */
-
-#define ENUMSIZE(high,low) INT	/* enums are always stored in full int */
+#define	TARGET_ENDIAN TARGET_LE	/* little-endian only */
 
 #define FINDMOPS	/* i386 has instructions that modifies memory */
 
@@ -247,7 +245,6 @@ int COLORMAP(int c, int *r);
  * i386-specific symbol table flags.
  */
 #define SBEENHERE	SLOCAL1
-#define	STLS		SLOCAL2
 
 /*
  * Extended assembler macros.

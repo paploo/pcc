@@ -1,4 +1,4 @@
-/*	$OpenBSD$	*/
+/*	$Id: macdefs.h,v 1.18 2011/06/05 10:19:24 ragge Exp $	*/
 
 /*
  * Copyright (c) 2007 Michael Shalayeff
@@ -87,7 +87,6 @@
 
 #undef	CHAR_UNSIGNED
 #define	BOOL_TYPE	CHAR
-#define	ENUMSIZE(high,low)	INT
 
 typedef long long CONSZ;
 typedef unsigned long long U_CONSZ;
@@ -101,7 +100,7 @@ typedef long long OFFSZ;
 #undef	BACKTEMP	/* stack grows upwards */
 
 #define	FIELDOPS	/* have bit field ops */
-#define	LTORBYTES	/* big endian */
+#define TARGET_ENDIAN TARGET_BE
 
 #define	BYTEOFF(x)	((x)&03)
 #define	wdal(k)		(BYTEOFF(k)==0)

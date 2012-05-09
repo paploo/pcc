@@ -1,4 +1,4 @@
-/*	$Id: cpp.h,v 1.47.2.1 2011/02/26 06:36:40 ragge Exp $	*/
+/*	$Id: cpp.h,v 1.56 2012/04/22 12:44:11 ragge Exp $	*/
 
 /*
  * Copyright (c) 2004,2010 Anders Magnusson (ragge@ludd.luth.se).
@@ -38,6 +38,7 @@ extern	int	trulvl;
 extern	int	flslvl;
 extern	int	elflvl;
 extern	int	elslvl;
+extern	int	dflag;
 extern	int	tflag, Cflag, Pflag;
 extern	int	Mflag, dMflag;
 extern	usch	*Mfile;
@@ -49,10 +50,10 @@ extern	int	ofd;
 
 /* buffer used internally */
 #ifndef CPPBUF
-#if defined(__pdp11__)
+#if defined(mach_pdp11)
 #define CPPBUF  BUFSIZ
 #define	BUF_STACK
-#elif defined(WIN32)
+#elif defined(os_win32)
 /* winxp seems to fail > 26608 bytes */
 #define CPPBUF	16384
 #else
@@ -60,7 +61,7 @@ extern	int	ofd;
 #endif
 #endif
 
-#define	MAXARGS	128	/* Max # of args to a macro. Should be enouth */
+#define	MAXARGS	128	/* Max # of args to a macro. Should be enough */
 
 #define	NAMEMAX	CPPBUF	/* currently pushbackbuffer */
 #define	BBUFSZ	(NAMEMAX+CPPBUF+1)
@@ -111,6 +112,9 @@ struct includ {
 	usch *bbuf;
 #endif
 } *ifiles;
+#define INCINC 0
+#define SYSINC 1
+
 
 /* Symbol table entry  */
 struct symtab {
@@ -146,10 +150,17 @@ struct nd {
 struct symtab *lookup(const usch *namep, int enterf);
 usch *gotident(struct symtab *nl);
 int slow;	/* scan slowly for new tokens */
+int defining;
 int submac(struct symtab *nl, int);
 int kfind(struct symtab *nl);
 int doexp(void);
 int donex(void);
+void ppdir(void);
+
+void define(void);
+void include(void);
+void include_next(void);
+void line(void);
 
 int pushfile(const usch *fname, const usch *fn, int idx, void *incs);
 void popfile(void);

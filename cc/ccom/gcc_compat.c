@@ -1,4 +1,4 @@
-/*      $Id: gcc_compat.c,v 1.77 2011/02/01 14:20:02 ragge Exp $     */
+/*      $Id: gcc_compat.c,v 1.85 2012/04/22 21:07:41 plunky Exp $     */
 /*
  * Copyright (c) 2004 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -97,7 +97,7 @@ static char *g77n[] = { "__g77_integer", "__g77_uinteger",
 	"__g77_longint", "__g77_ulongint" };
 
 void
-gcc_init()
+gcc_init(void)
 {
 	struct kw *kwp;
 	NODE *p;
@@ -110,13 +110,12 @@ gcc_init()
 	for (i = 0; i < 4; i++) {
 		struct symtab *sp;
 		t = ctype(g77t[i]);
-		p = block(NAME, NIL, NIL, t, NULL, MKAP(t));
+		p = block(NAME, NIL, NIL, t, NULL, 0);
 		sp = lookup(addname(g77n[i]), 0);
 		p->n_sp = sp;
 		defid(p, TYPEDEF);
 		nfree(p);
 	}
-
 }
 
 #define	TS	"\n#pragma tls\n# %d\n"
@@ -150,7 +149,7 @@ gcc_keyword(char *str, NODE **n)
 	switch (i) {
 	case 1:  /* __signed */
 	case 14: /* __signed__ */
-		*n = mkty((TWORD)SIGNED, 0, MKAP(SIGNED));
+		*n = mkty((TWORD)SIGNED, 0, 0);
 		return C_TYPE;
 	case 3: /* __const */
 		*n = block(QUALIFIER, NIL, NIL, CON, 0, 0);
@@ -225,7 +224,7 @@ struct atax {
 } atax[GCC_ATYP_MAX] = {
 	CS(ATTR_NONE)		{ 0, NULL },
 	CS(ATTR_COMPLEX)	{ 0, NULL },
-	CS(ATTR_BASETYP)	{ 0, NULL },
+	CS(xxxATTR_BASETYP)	{ 0, NULL },
 	CS(ATTR_QUALTYP)	{ 0, NULL },
 	CS(ATTR_STRUCT)		{ 0, NULL },
 	CS(GCC_ATYP_ALIGNED)	{ A_0ARG|A_1ARG, "aligned" },
@@ -262,6 +261,7 @@ struct atax {
 	CS(GCC_ATYP_ALW_INL)	{ A_0ARG, "always_inline" },
 	CS(GCC_ATYP_TLSMODEL)	{ A_1ARG|A1_STR, "tls_model" },
 	CS(GCC_ATYP_ALIASWEAK)	{ A_1ARG|A1_STR, "aliasweak" },
+	CS(GCC_ATYP_RETURNS_TWICE) { A_0ARG, "returns_twice" },
 
 	CS(GCC_ATYP_BOUNDED)	{ A_3ARG|A_MANY|A1_NAME, "bounded" },
 };
@@ -469,33 +469,41 @@ gcc_tcattrfix(NODE *p)
 {
 	struct symtab *sp;
 	struct attr *ap;
-	int sz, coff, csz, al;
+	int sz, coff, csz, al, oal, mxal;
 
 	if ((ap = attr_find(p->n_ap, GCC_ATYP_PACKED)) == NULL)
 		return; /* nothing to fix */
 
 	al = ap->iarg(0);
+	mxal = 0;
 
 	/* Must repack struct */
 	coff = csz = 0;
 	for (sp = strmemb(ap); sp; sp = sp->snext) {
+		oal = talign(sp->stype, sp->sap);
+		if (oal > al)
+			oal = al;
+		if (mxal < oal)
+			mxal = oal;
 		if (sp->sclass & FIELD)
 			sz = sp->sclass&FLDSIZ;
 		else
 			sz = (int)tsize(sp->stype, sp->sdf, sp->sap);
-		SETOFF(sz, al);
-		sp->soffset = coff;
-		coff += sz;
+		sp->soffset = upoff(sz, oal, &coff);
 		if (coff > csz)
 			csz = coff;
 		if (p->n_type == UNIONTY)
 			coff = 0;
 	}
-	SETOFF(csz, al); /* Roundup to whatever */
+	if (mxal < ALCHAR)
+		mxal = ALCHAR; /* for bitfields */
+	SETOFF(csz, mxal); /* Roundup to whatever */
 
-	ap = attr_find(p->n_ap, ATTR_BASETYP);
-	ap->atypsz = csz;
-	ap->aalign = al;
+	ap = attr_find(p->n_ap, ATTR_STRUCT);
+	ap->amsize = csz;
+	ap = attr_find(p->n_ap, GCC_ATYP_ALIGNED);
+	ap->iarg(0) = mxal;
+
 }
 
 /*
@@ -504,7 +512,8 @@ gcc_tcattrfix(NODE *p)
 int
 pragmas_gcc(char *t)
 {
-	int ign, warn, err, i, u;
+	char u;
+	int ign, warn, err, i;
 	extern bittype warnary[], werrary[];
 	extern char *flagstr[], *pragstore;
 
@@ -544,6 +553,8 @@ pragmas_gcc(char *t)
 		/* currently ignore */;
 	} else if (strcmp(t, "visibility") == 0) {
 		/* currently ignore */;
+	} else if (strcmp(t, "system_header") == 0) {
+		/* currently ignore */;
 	} else
 		werror("gcc pragma unsupported");
 	return 0;
@@ -559,7 +570,6 @@ dump_attr(struct attr *ap)
 			printf("bad type %d, ", ap->atype);
 		} else if (atax[ap->atype].name == 0) {
 			char *c = ap->atype == ATTR_COMPLEX ? "complex" :
-			    ap->atype == ATTR_BASETYP ? "basetyp" :
 			    ap->atype == ATTR_STRUCT ? "struct" : "badtype";
 			printf("%s, ", c);
 		} else {

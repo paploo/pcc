@@ -1,4 +1,4 @@
-/*	$Id: code.c,v 1.17 2010/09/19 14:01:35 ragge Exp $	*/
+/*	$Id: code.c,v 1.22 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -36,38 +36,56 @@
 #include "pass1.h"
 
 /*
+ * Print out assembler segment name.
+ */
+void
+setseg(int seg, char *name)
+{
+	switch (seg) {
+	case PROG: name = ".text"; break;
+	case DATA:
+	case LDATA: name = ".data"; break;
+	case STRNG:
+	case RDATA: name = ".section .rodata"; break;
+	case UDATA: break;
+	case PICLDATA:
+	case PICDATA: name = ".section .data.rel.rw,\"aw\",@progbits"; break;
+	case PICRDATA: name = ".section .data.rel.ro,\"aw\",@progbits"; break;
+	case TLSDATA: name = ".section .tdata,\"awT\",@progbits"; break;
+	case TLSUDATA: name = ".section .tbss,\"awT\",@nobits"; break;
+	case CTORS: name = ".section\t.ctors,\"aw\",@progbits"; break;
+	case DTORS: name = ".section\t.dtors,\"aw\",@progbits"; break;
+	case NMSEG: 
+		printf("\t.section %s,\"aw\",@progbits\n", name);
+		return;
+	}
+	printf("\t%s\n", name);
+}
+
+/*
  * Define everything needed to print out some data (or text).
  * This means segment, alignment, visibility, etc.
  */
 void
 defloc(struct symtab *sp)
 {
-	static char *loctbl[] = { "text", "data", "section .rodata" };
-	static int lastloc = -1;
-	TWORD t;
 	char *n;
-	int s;
 
-	if (sp == NULL) {
-		lastloc = -1;
-		return;
-	}
-	t = sp->stype;
-	s = ISFTN(t) ? PROG : ISCON(cqual(t, sp->squal)) ? RDATA : DATA;
-	lastloc = s;
-	if (s == PROG)
-		return; /* text is written in prologue() */
-	if (s != lastloc)
-		printf("	.%s\n", loctbl[s]);
-	printf("	.p2align %d\n", ispow2(talign(t, sp->sap)));
-	n = sp->soname ? sp->soname : sp->sname;
+	if (ISFTN(sp->stype))
+		return; /* XXX until fixed */
+
+	if ((n = sp->soname) == NULL)
+		n = exname(sp->sname);
+
 	if (sp->sclass == EXTDEF)
 		printf("	.globl %s\n", n);
 	if (sp->slevel == 0) {
 #ifdef USE_GAS
-		printf("\t.type %s,@object\n", n);
-		printf("\t.size %s," CONFMT "\n", n,
-		    tsize(sp->stype, sp->sdf, sp->sap));
+		printf("\t.type %s,@%s\n", n,
+		    ISFTN(sp->stype) ? "function" : "object");
+		if (!ISFTN(sp->stype))
+			printf("\t.size %s," CONFMT "\n", n,
+			    tsize(sp->stype, sp->sdf, sp->sap));
 #endif
 		printf("%s:\n", n);
 	} else
@@ -75,10 +93,8 @@ defloc(struct symtab *sp)
 }
 
 
-#ifdef notdef
 /*
  * cause the alignment to become a multiple of n
- * never called for text segment.
  */
 void
 defalign(int n)
@@ -89,25 +105,6 @@ defalign(int n)
 	printf("\t.p2align %d\n", n);
 }
 
-/*
- * define the current location as the name p->sname
- * never called for text segment.
- */
-void
-defnam(struct symtab *p)
-{
-	char *c = p->soname;
-
-	if (p->sclass == EXTDEF)
-		printf("\t.globl %s\n", c);
-#ifdef USE_GAS
-	printf("\t.type %s,@object\n", c);
-	printf("\t.size %s," CONFMT "\n", c, tsize(p->stype, p->sdf, p->sap));
-#endif
-	printf("%s:\n", c);
-}
-#endif
-
 static int rvnr;
 
 /*
@@ -115,7 +112,7 @@ static int rvnr;
  * deals with struct return here
  */
 void
-efcode()
+efcode(void)
 {
 	NODE *p, *q;
 	int tempnr;
@@ -196,12 +193,12 @@ param_struct(struct symtab *sym, int *regp)
 	off = ARGINIT/SZINT + (reg - A0);
 	num = sz > navail ? navail : sz;
 	for (i = 0; i < num; i++) {
-		q = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		q = block(REG, NIL, NIL, INT, 0, 0);
 		q->n_rval = reg++;
-		p = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		p = block(REG, NIL, NIL, INT, 0, 0);
 		p->n_rval = FP;
-		p = block(PLUS, p, bcon(4*off++), INT, 0, MKAP(INT));
-		p = block(UMUL, p, NIL, INT, 0, MKAP(INT));
+		p = block(PLUS, p, bcon(4*off++), INT, 0, 0);
+		p = block(UMUL, p, NIL, INT, 0, 0);
 		p = buildtree(ASSIGN, p, q);
 		ecomp(p);
 	}
@@ -297,9 +294,9 @@ param_double(struct symtab *sym, int *regp, int dotemps)
 		return;
 	}
 
-	t = tempnode(0, LONGLONG, 0, MKAP(LONGLONG));
+	t = tempnode(0, LONGLONG, 0, 0);
 	tmpnr = regno(t);
-	q = block(REG, NIL, NIL, LONGLONG, 0, MKAP(LONGLONG));
+	q = block(REG, NIL, NIL, LONGLONG, 0, 0);
 	q->n_rval = A0A1 + (reg - A0);
 	p = buildtree(ASSIGN, t, q);
 	ecomp(p);
@@ -327,9 +324,9 @@ param_float(struct symtab *sym, int *regp, int dotemps)
 	NODE *p, *q, *t;
 	int tmpnr;
 
-	t = tempnode(0, INT, 0, MKAP(INT));
+	t = tempnode(0, INT, 0, 0);
 	tmpnr = regno(t);
-	q = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+	q = block(REG, NIL, NIL, INT, 0, 0);
 	q->n_rval = (*regp)++;
 	p = buildtree(ASSIGN, t, q);
 	ecomp(p);
@@ -403,12 +400,12 @@ bfcode(struct symtab **sp, int cnt)
 	while (reg <= lastreg) {
 		NODE *p, *q;
 		int off = ARGINIT/SZINT + (reg - A0);
-		q = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		q = block(REG, NIL, NIL, INT, 0, 0);
 		q->n_rval = reg++;
-		p = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		p = block(REG, NIL, NIL, INT, 0, 0);
 		p->n_rval = FP;
-		p = block(PLUS, p, bcon(4*off), INT, 0, MKAP(INT));
-		p = block(UMUL, p, NIL, INT, 0, MKAP(INT));
+		p = block(PLUS, p, bcon(4*off), INT, 0, 0);
+		p = block(UMUL, p, NIL, INT, 0, 0);
 		p = buildtree(ASSIGN, p, q);
 		ecomp(p);
 	}
@@ -416,24 +413,15 @@ bfcode(struct symtab **sp, int cnt)
 }
 
 
-/*
- * by now, the automatics and register variables are allocated
- */
-void
-bccode()
-{
-	SETOFF(autooff, SZINT);
-}
-
 /* called just before final exit */
 /* flag is 1 if errors, 0 if none */
 void
-ejobcode(int flag )
+ejobcode(int flag)
 {
 }
 
 void
-bjobcode()
+bjobcode(void)
 {
 	printf("\t.section .mdebug.abi32\n");
 	printf("\t.previous\n");
@@ -481,16 +469,6 @@ bycode(int t, int i)
 	}
 }
 #endif
-
-/*
- * return the alignment of field of type t
- */
-int
-fldal(unsigned int t)
-{
-	uerror("illegal field type");
-	return(ALINT);
-}
 
 /* fix up type of field p */
 void
@@ -541,44 +519,44 @@ movearg_struct(NODE *p, NODE *parent, int *regp)
 
 	/* copy structure into registers */
 	for (i = 0; i < num; i++) {
-		t = tempnode(tmpnr, ty, 0, MKAP(PTR+ty));
-		t = block(SCONV, t, NIL, PTR+INT, 0, MKAP(PTR+INT));
-		t = block(PLUS, t, bcon(4*i), PTR+INT, 0, MKAP(PTR+INT));
+		t = tempnode(tmpnr, ty, 0, 0);
+		t = block(SCONV, t, NIL, PTR+INT, 0, 0);
+		t = block(PLUS, t, bcon(4*i), PTR+INT, 0, 0);
 		t = buildtree(UMUL, t, NIL);
 
-		r = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		r = block(REG, NIL, NIL, INT, 0, 0);
 		r->n_rval = reg++;
 
                	r = buildtree(ASSIGN, r, t);
 		if (q == NULL)
 			q = r;
 		else 
-			q = block(CM, q, r, INT, 0, MKAP(INT));
+			q = block(CM, q, r, INT, 0, 0);
 	}
 	off = ARGINIT/SZINT + nargregs;
 	for (i = num; i < sz; i++) {
-		t = tempnode(tmpnr, ty, 0, MKAP(PTR+ty));
-		t = block(SCONV, t, NIL, PTR+INT, 0, MKAP(PTR+INT));
-		t = block(PLUS, t, bcon(4*i), PTR+INT, 0, MKAP(PTR+INT));
+		t = tempnode(tmpnr, ty, 0, 0);
+		t = block(SCONV, t, NIL, PTR+INT, 0, 0);
+		t = block(PLUS, t, bcon(4*i), PTR+INT, 0, 0);
 		t = buildtree(UMUL, t, NIL);
 
-		r = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+		r = block(REG, NIL, NIL, INT, 0, 0);
 		r->n_rval = FP;
-		r = block(PLUS, r, bcon(4*off++), INT, 0, MKAP(INT));
-		r = block(UMUL, r, NIL, INT, 0, MKAP(INT));
+		r = block(PLUS, r, bcon(4*off++), INT, 0, 0);
+		r = block(UMUL, r, NIL, INT, 0, 0);
 
                	r = buildtree(ASSIGN, r, t);
 		if (q == NULL)
 			q = r;
 		else
-			q = block(CM, q, r, INT, 0, MKAP(INT));
+			q = block(CM, q, r, INT, 0, 0);
 	}
 
 	if (parent->n_op == CM) {
 		parent->n_left = q;
 		q = l;
 	} else {
-		q = block(CM, q, l, INT, 0, MKAP(INT));
+		q = block(CM, q, l, INT, 0, 0);
 	}
 
 	*regp = reg;
@@ -655,7 +633,7 @@ moveargs(NODE *p, int *regp)
 		*rp = movearg_64bit(r, regp);
 	} else if (r->n_type == DOUBLE || r->n_type == LDOUBLE) {
 		/* XXX bounce in and out of temporary to change to longlong */
-		NODE *t1 = tempnode(0, LONGLONG, 0, MKAP(LONGLONG));
+		NODE *t1 = tempnode(0, LONGLONG, 0, 0);
 		int tmpnr = regno(t1);
 		NODE *t2 = tempnode(tmpnr, r->n_type, r->n_df, r->n_ap);
 		t1 =  movearg_64bit(t1, regp);
@@ -668,7 +646,7 @@ moveargs(NODE *p, int *regp)
 		}
 	} else if (r->n_type == FLOAT) {
 		/* XXX bounce in and out of temporary to change to int */
-		NODE *t1 = tempnode(0, INT, 0, MKAP(INT));
+		NODE *t1 = tempnode(0, INT, 0, 0);
 		int tmpnr = regno(t1);
 		NODE *t2 = tempnode(tmpnr, r->n_type, r->n_df, r->n_ap);
 		t1 =  movearg_32bit(t1, regp);

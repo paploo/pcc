@@ -1,4 +1,4 @@
-/*	$Id: reader.c,v 1.268.2.1 2011/03/15 17:23:18 ragge Exp $	*/
+/*	$Id: reader.c,v 1.279 2012/04/22 21:07:41 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -11,8 +11,6 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission
  *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
@@ -73,8 +71,6 @@
 
 /*	some storage declarations */
 int nrecur;
-int lflag;
-int x2debug, udebug, odebug;
 int thisline;
 int fregs;
 int p2autooff, p2maxautooff;
@@ -91,6 +87,7 @@ static void fixxasm(struct p2env *);
 
 static void gencode(NODE *p, int cookie);
 static void genxasm(NODE *p);
+static void afree(void);
 
 struct p2env p2env;
 
@@ -116,6 +113,10 @@ cktree(NODE *p, void *arg)
 
 	if (p->n_op > MAXOP)
 		cerror("%p) op %d slipped through", p, p->n_op);
+#ifndef FIELDOPS
+	if (p->n_op == FLD)
+		cerror("%p) FLD slipped through", p);
+#endif
 	if (BTYPE(p->n_type) > MAXTYPES)
 		cerror("%p) type %x slipped through", p, p->n_type);
 	if (p->n_op == CBRANCH) {
@@ -184,7 +185,7 @@ sanitychecks(struct p2env *p2e)
  * a new place, and remove the move-to-temp statement.
  */
 static int
-stkarg(int tnr, int *soff)
+stkarg(int tnr, int (*soff)[2])
 {
 	struct p2env *p2e = &p2env;
 	struct interpass *ip;
@@ -218,11 +219,13 @@ stkarg(int tnr, int *soff)
 		if (p->n_op == UMUL &&
 		    p->n_left->n_op == PLUS &&
 		    p->n_left->n_left->n_op == REG &&
-		    p->n_left->n_right->n_op == ICON)
-			*soff = (int)p->n_left->n_right->n_lval;
-		else if (p->n_op == OREG)
-			*soff = (int)p->n_lval;
-		else
+		    p->n_left->n_right->n_op == ICON) {
+			soff[0][0] = regno(p->n_left->n_left);
+			soff[0][1] = (int)p->n_left->n_right->n_lval;
+		} else if (p->n_op == OREG) {
+			soff[0][0] = regno(p);
+			soff[0][1] = (int)p->n_lval;
+		} else
 			comperr("stkarg: bad arg");
 		tfree(ip->ip_node);
 		DLIST_REMOVE(ip, qelem);
@@ -238,17 +241,18 @@ stkarg(int tnr, int *soff)
 static void
 findaof(NODE *p, void *arg)
 {
-	int *aof = arg;
+	int (*aof)[2] = arg;
 	int tnr;
 
 	if (p->n_op != ADDROF || p->n_left->n_op != TEMP)
 		return;
 	tnr = regno(p->n_left);
-	if (aof[tnr])
+	if (aof[tnr][0])
 		return; /* already gotten stack address */
 	if (stkarg(tnr, &aof[tnr]))
 		return;	/* argument was on stack */
-	aof[tnr] = BITOOR(freetemp(szty(p->n_left->n_type)));
+	aof[tnr][0] = FPREG;
+	aof[tnr][1] = BITOOR(freetemp(szty(p->n_left->n_type)));
 }
 
 /*
@@ -324,7 +328,7 @@ pass2_compile(struct interpass *ip)
 {
 	void deljumps(struct p2env *);
 	struct p2env *p2e = &p2env;
-	int *addrp;
+	int (*addrp)[2];
 	MARK mark;
 
 	if (ip->type == IP_PROLOG) {
@@ -343,6 +347,7 @@ pass2_compile(struct interpass *ip)
 	}
 #endif
 
+	afree();
 	p2e->epp = (struct interpass_prolog *)DLIST_PREV(&p2e->ipole, qelem);
 	p2maxautooff = p2autooff = p2e->epp->ipp_autos;
 
@@ -360,7 +365,7 @@ pass2_compile(struct interpass *ip)
 	 */
 	markset(&mark);
 	if (p2e->epp->ip_tmpnum != p2e->ipp->ip_tmpnum) {
-		addrp = tmpcalloc(sizeof(int) *
+		addrp = tmpcalloc(sizeof(*addrp) *
 		    (p2e->epp->ip_tmpnum - p2e->ipp->ip_tmpnum));
 		addrp -= p2e->ipp->ip_tmpnum;
 	} else
@@ -404,7 +409,7 @@ pass2_compile(struct interpass *ip)
 	optimize(p2e);
 	ngenregs(p2e);
 
-	if (xssaflag && xtemps && xdeljumps)
+	if (xssa && xtemps && xdeljumps)
 		deljumps(p2e);
 
 	DLIST_FOREACH(ip, &p2e->ipole, qelem)
@@ -542,7 +547,7 @@ geninsn(NODE *p, int cookie)
 	int q, o, rv = 0;
 
 #ifdef PCC_DEBUG
-	if (odebug) {
+	if (o2debug) {
 		printf("geninsn(%p, %s)\n", p, prcook(cookie));
 		fwalk(p, e2print, 0);
 	}
@@ -669,7 +674,7 @@ again:	switch (o = p->n_op) {
 	if (rv == FRETRY)
 		goto again;
 #ifdef PCC_DEBUG
-	if (odebug) {
+	if (o2debug) {
 		printf("geninsn(%p, %s) rv %d\n", p, prcook(cookie), rv);
 		fwalk(p, e2print, 0);
 	}
@@ -706,18 +711,31 @@ store(NODE *p)
 
 /*
  * Do a register-register move if necessary.
+ * Called if a RLEFT or RRIGHT is found.
  */
 static void
 ckmove(NODE *p, NODE *q)
 {
+	struct optab *t = &table[TBLIDX(p->n_su)];
+	int reg;
+
 	if (q->n_op != REG || p->n_reg == -1)
 		return; /* no register */
-	if (DECRA(p->n_reg, 0) == DECRA(q->n_reg, 0))
+
+	/* do we have a need for special reg? */
+	if ((t->needs & NSPECIAL) &&
+	    (reg = rspecial(t, p->n_left == q ? NLEFT : NRIGHT)) >= 0)
+		;
+	else
+		reg = DECRA(p->n_reg, 0);
+
+	if (reg < 0 || reg == DECRA(q->n_reg, 0))
 		return; /* no move necessary */
+
 	CDEBUG(("rmove: node %p, %s -> %s\n", p, rnames[DECRA(q->n_reg, 0)],
-	    rnames[DECRA(p->n_reg, 0)]));
-	rmove(DECRA(q->n_reg, 0), DECRA(p->n_reg, 0), p->n_type);
-	q->n_reg = q->n_rval = DECRA(p->n_reg, 0);
+	    rnames[reg]));
+	rmove(DECRA(q->n_reg, 0), reg, p->n_type);
+	q->n_reg = q->n_rval = reg;
 }
 
 /*
@@ -823,6 +841,46 @@ genxasm(NODE *p)
 		w++;
 	}
 	putchar('\n');
+}
+
+/*
+ * Allocate temporary registers for use while emitting this table entry.
+ */
+static void
+allo(NODE *p, struct optab *q)
+{
+	extern int stktemp;
+	int i, n = ncnt(q->needs);
+
+	for (i = 0; i < NRESC; i++)
+		if (resc[i].n_op != FREE)
+			comperr("allo: used reg");
+	if (n == 0 && (q->needs & NTMASK) == 0)
+		return;
+	for (i = 0; i < n+1; i++) {
+		resc[i].n_op = REG;
+		resc[i].n_type = p->n_type; /* XXX should be correct type */
+		resc[i].n_rval = DECRA(p->n_reg, i);
+		resc[i].n_su = p->n_su; /* ??? */
+	}
+	if (i > NRESC)
+		comperr("allo: too many allocs");
+	if (q->needs & NTMASK) {
+		resc[i].n_op = OREG;
+		resc[i].n_lval = stktemp;
+		resc[i].n_rval = FPREG;
+		resc[i].n_su = p->n_su; /* ??? */
+		resc[i].n_name = "";
+	}
+}
+
+static void
+afree(void)
+{
+	int i;
+
+	for (i = 0; i < NRESC; i++)
+		resc[i].n_op = FREE;
 }
 
 void
@@ -938,7 +996,9 @@ gencode(NODE *p, int cookie)
 	if (TBLIDX(p->n_su) == 0)
 		return;
 
+	allo(p, q);
 	expand(p, cookie, q->cstring);
+
 #ifdef FINDMOPS
 	if (ismops && DECRA(p->n_reg, 0) != regno(l) && cookie != FOREFF) {
 		CDEBUG(("gencode(%p) rmove\n", p));
@@ -978,6 +1038,7 @@ gencode(NODE *p, int cookie)
 	}
 #endif
 	rewrite(p, q->rewrite, cookie);
+	afree();
 }
 
 int negrel[] = { NE, EQ, GT, GE, LT, LE, UGT, UGE, ULT, ULE } ;  /* negatives of relationals */
@@ -1058,88 +1119,24 @@ e2print(NODE *p, int down, int *a, int *b)
 }
 #endif
 
-#ifndef FIELDOPS
-/*
- * do this if there is no special hardware support for fields
- */
-static void
-ffld(NODE *p, int down, int *down1, int *down2 )
-{
-	/*
-	 * look for fields that are not in an lvalue context,
-	 * and rewrite them...
-	 */
-	NODE *shp;
-	int s, o, v, ty;
-
-	*down1 =  asgop( p->n_op );
-	*down2 = 0;
-
-	if( !down && p->n_op == FLD ){ /* rewrite the node */
-
-		if( !rewfld(p) ) return;
-
-		ty = p->n_type;
-		v = p->n_rval;
-		s = UPKFSZ(v);
-# ifdef RTOLBYTES
-		o = UPKFOFF(v);  /* amount to shift */
-# else
-		o = szty(p->n_type)*SZINT - s - UPKFOFF(v);  /* amount to shift */
-#endif
-		/* make & mask part */
-
-		if (ISUNSIGNED(ty)) {
-
-			p->n_left->n_type = ty;
-			p->n_op = AND;
-			p->n_right = mklnode(ICON, ((CONSZ)1 << s)-1, 0, ty);
-
-			/* now, if a shift is needed, do it */
-			if( o != 0 ){
-				shp = mkbinode(RS, p->n_left,
-				    mklnode(ICON, o, 0, INT), ty);
-				p->n_left = shp;
-				/* whew! */
-			}
-		} else {
-			int mz;
-
-			mz = 0;
-#define	SZT(x) case x: mz = SZ ## x; break;
-			switch (ty) {
-			SZT(CHAR) SZT(SHORT) SZT(INT) SZT(LONG)
-			SZT(LONGLONG)
-			}
-			/* must sign-extend, assume RS will do */
-			/* if not, arch must use rewfld() */
-			p->n_left->n_type = ty;
-			p->n_op = RS;
-			p->n_right = mklnode(ICON, mz-s, 0, INT);
-			p->n_left = mkbinode(LS, p->n_left, 
-			    mklnode(ICON, mz-s-o, 0, INT), ty);
-		}
-	}
-}
-#endif
-
 /*
  * change left TEMPs into OREGs
  */
 void
 deltemp(NODE *p, void *arg)
 {
-	int *aor = arg;
+	int (*aor)[2] = arg;
 	NODE *l, *r;
 
 	if (p->n_op == TEMP) {
-		if (aor[regno(p)] == 0) {
+		if (aor[regno(p)][0] == 0) {
 			if (xtemps)
 				return;
-			aor[regno(p)] = BITOOR(freetemp(szty(p->n_type)));
+			aor[regno(p)][0] = FPREG;
+			aor[regno(p)][1] = BITOOR(freetemp(szty(p->n_type)));
 		}
-		l = mklnode(REG, 0, FPREG, INCREF(p->n_type));
-		r = mklnode(ICON, aor[regno(p)], 0, INT);
+		l = mklnode(REG, 0, aor[regno(p)][0], INCREF(p->n_type));
+		r = mklnode(ICON, aor[regno(p)][1], 0, INT);
 		p->n_left = mkbinode(PLUS, l, r, INCREF(p->n_type));
 		p->n_op = UMUL;
 	} else if (p->n_op == ADDROF && p->n_left->n_op == OREG) {
@@ -1286,16 +1283,13 @@ oreg2(NODE *p, void *arg)
 }
 
 void
-canon(p) NODE *p; {
+canon(NODE *p)
+{
 	/* put p in canonical form */
 
 	walkf(p, setleft, 0);	/* ptrs at left node for arithmetic */
 	walkf(p, oreg2, 0);	/* look for and create OREG nodes */
-#ifndef FIELDOPS
-	fwalk(p, ffld, 0);	/* look for field operators */
-# endif
 	mycanon(p);		/* your own canonicalization routine(s) */
-
 }
 
 void
@@ -1337,8 +1331,11 @@ freetemp(int k)
 #ifndef BACKTEMP
 	int t;
 
-	if (k > 1)
+	if (k > 1) {
 		SETOFF(p2autooff, ALDOUBLE/ALCHAR);
+	} else {
+		SETOFF(p2autooff, ALINT/ALCHAR);
+	}
 
 	t = p2autooff;
 	p2autooff += k*(SZINT/SZCHAR);
@@ -1348,14 +1345,17 @@ freetemp(int k)
 
 #else
 	p2autooff += k*(SZINT/SZCHAR);
-	if (k > 1)
+	if (k > 1) {
 		SETOFF(p2autooff, ALDOUBLE/ALCHAR);
+	} else {
+		SETOFF(p2autooff, ALINT/ALCHAR);
+	}
 
 	if (p2autooff > p2maxautooff)
 		p2maxautooff = p2autooff;
 	return( -p2autooff );
 #endif
-	}
+}
 
 NODE *
 mklnode(int op, CONSZ lval, int rval, TWORD type)

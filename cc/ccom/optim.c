@@ -1,4 +1,4 @@
-/*	$Id: optim.c,v 1.36.2.1 2011/03/01 17:40:21 ragge Exp $	*/
+/*	$Id: optim.c,v 1.52 2012/04/22 21:07:41 plunky Exp $	*/
 /*
  * Copyright(C) Caldera International Inc. 2001-2002. All rights reserved.
  *
@@ -83,14 +83,12 @@ short revrel[] ={ EQ, NE, GE, GT, LE, LT, UGE, UGT, ULE, ULT };
 NODE *
 optim(NODE *p)
 {
-	struct attr *ap;
 	int o, ty;
 	NODE *sp, *q;
+	OFFSZ sz;
 	int i;
-	TWORD t;
 
-	t = BTYPE(p->n_type);
-	if( oflag ) return(p);
+	if (odebug) return(p);
 
 	ty = coptype(p->n_op);
 	if( ty == LTYPE ) return(p);
@@ -103,8 +101,17 @@ again:	o = p->n_op;
 	switch(o){
 
 	case SCONV:
+		if (concast(p->n_left, p->n_type)) {
+			q = p->n_left;
+			nfree(p);
+			p = q;
+			break;
+		}
+		/* FALLTHROUGH */
 	case PCONV:
-		return( clocal(p) );
+		if (p->n_type != VOID)
+			p = clocal(p);
+		break;
 
 	case FORTCALL:
 		p->n_right = fortarg( p->n_right );
@@ -112,10 +119,11 @@ again:	o = p->n_op;
 
 	case ADDROF:
 		if (LO(p) == TEMP)
-			return p;
+			break;
 		if( LO(p) != NAME ) cerror( "& error" );
 
-		if( !andable(p->n_left) ) return(p);
+		if( !andable(p->n_left) && !statinit)
+			break;
 
 		LO(p) = ICON;
 
@@ -126,14 +134,24 @@ again:	o = p->n_op;
 		p->n_left->n_ap = p->n_ap;
 		q = p->n_left;
 		nfree(p);
-		return q;
+		p = q;
+		break;
+
+	case NOT:
+	case UMINUS:
+	case COMPL:
+		if (LCON(p) && conval(p->n_left, o, p->n_left))
+			p = nfree(p);
+		break;
 
 	case UMUL:
-		if (LO(p) == ADDROF) {
+		/* Do not discard ADDROF TEMP's */
+		if (LO(p) == ADDROF && LO(p->n_left) != TEMP) {
 			q = p->n_left->n_left;
 			nfree(p->n_left);
 			nfree(p);
-			return q;
+			p = q;
+			break;
 		}
 		if( LO(p) != ICON ) break;
 		LO(p) = NAME;
@@ -143,10 +161,10 @@ again:	o = p->n_op;
 		if (LCON(p) && RCON(p) && conval(p->n_left, o, p->n_right))
 			goto zapright;
 
-		ap = attr_find(p->n_ap, ATTR_BASETYP);
+		sz = tsize(p->n_type, p->n_df, p->n_ap);
 
 		if (LO(p) == RS && RCON(p->n_left) && RCON(p) &&
-		    (RV(p) + RV(p->n_left)) < ap->atypsz) {
+		    (RV(p) + RV(p->n_left)) < sz) {
 			/* two right-shift  by constants */
 			RV(p) += RV(p->n_left);
 			p->n_left = zapleft(p->n_left);
@@ -175,9 +193,8 @@ again:	o = p->n_op;
 			} else
 #endif
 			/* avoid larger shifts than type size */
-			if (RV(p) >= ap->atypsz) {
-				RV(p) = RV(p) % 
-				    attr_find(p->n_ap, ATTR_BASETYP)->atypsz;
+			if (RV(p) >= sz) {
+				RV(p) = RV(p) % sz;
 				werror("shift larger than type");
 			}
 			if (RV(p) == 0)
@@ -189,7 +206,7 @@ again:	o = p->n_op;
 		if (LCON(p) && RCON(p) && conval(p->n_left, o, p->n_right))
 			goto zapright;
 
-		ap = attr_find(p->n_ap, ATTR_BASETYP);
+		sz = tsize(p->n_type, p->n_df, p->n_ap);
 
 		if (LO(p) == LS && RCON(p->n_left) && RCON(p)) {
 			/* two left-shift  by constants */
@@ -217,14 +234,27 @@ again:	o = p->n_op;
 			} else
 #endif
 			/* avoid larger shifts than type size */
-			if (RV(p) >= ap->atypsz) {
-				RV(p) = RV(p) %
-				    attr_find(p->n_ap, ATTR_BASETYP)->atypsz;
+			if (RV(p) >= sz) {
+				RV(p) = RV(p) % sz;
 				werror("shift larger than type");
 			}
 			if (RV(p) == 0)  
 				p = zapleft(p);
 		}
+		break;
+
+	case QUEST:
+		if (LCON(p) == 0)
+			break;
+		if (LV(p) == 0) {
+			q = p->n_right->n_right;
+		} else {
+			q = p->n_right->n_left;
+			p->n_right->n_left = p->n_right->n_right;
+		}
+		p->n_right->n_op = UMUL; /* for tfree() */
+		tfree(p);
+		p = q;
 		break;
 
 	case MINUS:
@@ -238,6 +268,28 @@ again:	o = p->n_op;
 		o = p->n_op = PLUS;
 
 	case MUL:
+		/*
+		 * Check for u=(x-y)+z; where all vars are pointers to
+		 * the same struct. This has two advantages:
+		 * 1: avoid a mul+div
+		 * 2: even if not allowed, people may get surprised if this
+		 *    calculation do not give correct result if using
+		 *    unaligned structs.
+		 */
+		if (p->n_type == INTPTR && RCON(p) &&
+		    LO(p) == DIV && RCON(p->n_left) &&
+		    RV(p) == RV(p->n_left) &&
+		    LO(p->n_left) == MINUS) {
+			q = p->n_left->n_left;
+			if (q->n_left->n_type == PTR+STRTY &&
+			    q->n_right->n_type == PTR+STRTY &&
+			    strmemb(q->n_left->n_ap) ==
+			    strmemb(q->n_right->n_ap)) {
+				p = zapleft(p);
+				p = zapleft(p);
+			}
+		}
+		/* FALLTHROUGH */
 	case PLUS:
 	case AND:
 	case OR:
@@ -257,6 +309,7 @@ again:	o = p->n_op;
 			p->n_left = sp;
 			sp->n_left = t1;
 			sp->n_right = t2;
+			sp->n_type = p->n_type;
 			p->n_right = t3;
 			}
 		if(o == PLUS && LO(p) == MINUS && RCON(p) && RCON(p->n_left) &&
@@ -278,7 +331,8 @@ again:	o = p->n_op;
 			q = makety(p->n_left, p->n_type, p->n_qual,
 			    p->n_df, p->n_ap);
 			nfree(p);
-			return clocal(q);
+			p = clocal(q);
+			break;
 			}
 
 		/* change muls to shifts */
@@ -316,7 +370,7 @@ again:	o = p->n_op;
 			RV(p) = i;
 			q = p->n_right;
 			if(tsize(q->n_type, q->n_df, q->n_ap) > SZINT)
-				p->n_right = makety(q, INT, 0, 0, MKAP(INT));
+				p->n_right = makety(q, INT, 0, 0, 0);
 
 			break;
 		}
@@ -340,6 +394,18 @@ again:	o = p->n_op;
 	case ULE:
 	case UGT:
 	case UGE:
+		if (LCON(p) && RCON(p) &&
+		    !ISPTR(p->n_left->n_type) && !ISPTR(p->n_right->n_type)) {
+			/* Do constant evaluation */
+			q = p->n_left;
+			if (conval(q, o, p->n_right)) {
+				nfree(p->n_right);
+				nfree(p);
+				p = q;
+				break;
+			}
+		}
+
 		if( !LCON(p) ) break;
 
 		/* exchange operands */
@@ -379,7 +445,8 @@ ispow2(CONSZ c)
 }
 
 int
-nncon( p ) NODE *p; {
+nncon(NODE *p)
+{
 	/* is p a constant without a name */
 	return( p->n_op == ICON && p->n_sp == NULL );
-	}
+}

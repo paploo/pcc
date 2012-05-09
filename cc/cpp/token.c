@@ -1,4 +1,4 @@
-/*	$Id: token.c,v 1.48.2.2 2011/03/12 17:08:26 ragge Exp $	*/
+/*	$Id: token.c,v 1.65 2012/04/22 12:44:11 ragge Exp $	*/
 
 /*
  * Copyright (c) 2004,2009 Anders Magnusson. All rights reserved.
@@ -69,10 +69,6 @@ static void cppwarning(void);
 static void elifstmt(void);
 static void badop(const char *);
 static int chktg(void);
-static void ppdir(void);
-void  include(void);
-void  include_next(void);
-void  define(void);
 static int inpch(void);
 
 extern int yyget_lineno (void);
@@ -81,7 +77,6 @@ extern void yyset_lineno (int);
 static int inch(void);
 
 int inif;
-extern int dflag;
 
 #define	PUTCH(ch) if (!flslvl) putch(ch)
 /* protection against recursion in #include */
@@ -108,7 +103,7 @@ char spechr[256] = {
 	0,	C_I,	C_I,	C_I,	C_I,	C_I|C_EP, C_I,	C_I,
 	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,
 	C_I|C_EP, C_I,	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,
-	C_I,	C_I,	C_I,	0,	C_I,	0,	0,	C_I,
+	C_I,	C_I,	C_I,	0,	C_SPEC,	0,	0,	C_I,
 
 	0,	C_I,	C_I,	C_I,	C_I,	C_I|C_EP, C_I,	C_I,
 	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,	C_I,
@@ -182,7 +177,8 @@ static void
 fastscan(void)
 {
 	struct symtab *nl;
-	int ch, i, ccnt, onemore;
+	int ch, i = 0;
+	int nnl = 0;
 	usch *cp;
 
 	goto run;
@@ -190,8 +186,10 @@ fastscan(void)
 		ch = NXTCH();
 xloop:		if (ch == -1)
 			return;
+#ifdef PCC_DEBUG
 		if (dflag>1)
 			printf("fastscan ch %d (%c)\n", ch, ch > 31 ? ch : '@');
+#endif
 		if ((spechr[ch] & C_SPEC) == 0) {
 			PUTCH(ch);
 			continue;
@@ -236,6 +234,7 @@ cppcmt:				if (Cflag) { PUTCH(ch); } else { PUTCH(' '); }
 			goto xloop;
 
 		case '\n': /* newlines, for pp directives */
+			while (nnl > 0) { PUTCH('\n'); nnl--; }
 run2:			ifiles->lineno++;
 			do {
 				PUTCH(ch);
@@ -272,19 +271,31 @@ run:				ch = NXTCH();
 					unch(ch);
 					ch = '%';
 				}
+			} else if (ch == '?') {
+				if ((ch = chktg()) == '#') {
+					ppdir();
+					continue;
+				} else if (ch == 0) 
+					ch = '?';
 			}
 			goto xloop;
 
 		case '\"': /* strings */
 str:			PUTCH(ch);
-			while ((ch = inch()) != '\"') {
-					PUTCH(ch);
+			while ((ch = NXTCH()) != '\"') {
+				if (ch == '\n')
+					goto xloop;
 				if (ch == '\\') {
-					ch = inch();
-					PUTCH(ch);
-				}
+					if ((ch = NXTCH()) != '\n') {
+						PUTCH('\\');
+						PUTCH(ch);
+					} else
+						nnl++;
+					continue;
+                                }
 				if (ch < 0)
 					return;
+				PUTCH(ch);
 			}
 			PUTCH(ch);
 			break;
@@ -323,14 +334,19 @@ con:			PUTCH(ch);
 			if (tflag)
 				continue; /* character constants ignored */
 			while ((ch = NXTCH()) != '\'') {
-				PUTCH(ch);
-				if (ch == '\\') {
-					ch = NXTCH();
-					PUTCH(ch);
-				} else if (ch < 0)
-					return;
-				else if (ch == '\n')
+				if (ch == '\n')
 					goto xloop;
+				if (ch == '\\') {
+					if ((ch = NXTCH()) != '\n') {
+						PUTCH('\\');
+						PUTCH(ch);
+					} else
+						nnl++;
+					continue;
+				}
+				if (ch < 0)
+					return;
+				PUTCH(ch);
 			}
 			PUTCH(ch);
 			break;
@@ -356,16 +372,17 @@ con:			PUTCH(ch);
 					ch = NXTCH();
 				goto xloop;
 			}
-			onemore = i = ccnt = 0;
+			i = 0;
 			do {
 				yytext[i++] = (usch)ch;
 				ch = NXTCH();
 				if (ch == '\\') {
 					ch = NXTCH();
 					if (ch != '\n') {
-						unch('\n');
+						unch(ch);
 						ch = '\\';
 					} else {
+						putch('\n');
 						ifiles->lineno++;
 						ch = NXTCH();
 					}
@@ -390,7 +407,7 @@ con:			PUTCH(ch);
 }
 
 int
-sloscan()
+sloscan(void)
 {
 	int ch;
 	int yyp;
@@ -525,7 +542,7 @@ chlit:
 		goto any;
 
 	case '\"':
-		if (tflag)
+		if (tflag && defining)
 			goto any;
 	strng:
 		for (;;) {
@@ -571,7 +588,8 @@ chlit:
 			if (isalpha(ch) || isdigit(ch) || ch == '_') {
 				yytext[yyp++] = (usch)ch;
 			} else {
-				unch(ch);
+				if (ch != -1)
+					unch(ch);
 				break;
 			}
 		}
@@ -593,7 +611,7 @@ yyret:
 }
 
 int
-yylex()
+yylex(void)
 {
 	static int ifdef, noex;
 	struct symtab *nl;
@@ -847,7 +865,7 @@ pushfile(const usch *file, const usch *fn, int idx, void *incs)
  * Print current position to output file.
  */
 void
-prtline()
+prtline(void)
 {
 	usch *s, *os = stringbuf;
 
@@ -858,15 +876,19 @@ prtline()
 			s = sheap("%s: %s\n", Mfile, ifiles->fname);
 			write(ofd, s, strlen((char *)s));
 		}
-	} else if (!Pflag)
-		putstr(sheap("\n# %d \"%s\"\n", ifiles->lineno, ifiles->fname));
+	} else if (!Pflag) {
+		putstr(sheap("\n# %d \"%s\"", ifiles->lineno, ifiles->fname));
+		if (ifiles->idx == SYSINC)
+			putstr(sheap(" 3"));
+		putstr(sheap("\n"));
+	}
 	stringbuf = os;
 }
 
 void
 cunput(int c)
 {
-#ifdef CPP_DEBUG
+#ifdef PCC_DEBUG
 //	extern int dflag;
 //	if (dflag)printf(": '%c'(%d)\n", c > 31 ? c : ' ', c);
 #endif
@@ -975,14 +997,21 @@ chknl(int ignore)
 	while ((t = sloscan()) == WSPACE)
 		;
 	if (t != '\n') {
-		if (ignore) {
-			warning("newline expected, got \"%s\"", yytext);
-			/* ignore rest of line */
-			while ((t = sloscan()) && t != '\n')
-				;
+		if (t && t != (usch)-1) {
+			if (ignore) {
+				warning("newline expected, got \"%s\"", yytext);
+				/* ignore rest of line */
+				while ((t = sloscan()) && t != '\n')
+					;
+			}
+			else
+				error("newline expected, got \"%s\"", yytext);
+		} else {
+			if (ignore)
+				warning("no newline at end of file");
+			else
+				error("no newline at end of file");
 		}
-		else
-			error("newline expected, got \"%s\"", yytext);
 	}
 }
 
@@ -1183,6 +1212,8 @@ undefstmt(void)
 {
 	struct symtab *np;
 
+	if (flslvl)
+		return;
 	if (sloscan() != WSPACE || sloscan() != IDENT)
 		error("bad undef");
 	if (flslvl == 0 && (np = lookup((usch *)yytext, FIND)))
@@ -1216,7 +1247,7 @@ badop(const char *op)
 }
 
 int
-cinput()
+cinput(void)
 {
 	return inch();
 }
@@ -1225,7 +1256,7 @@ cinput()
  * Check for (and convert) trigraphs.
  */
 int
-chktg()
+chktg(void)
 {
 	int c;
 

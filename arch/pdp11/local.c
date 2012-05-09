@@ -1,4 +1,4 @@
-/*	$Id: local.c,v 1.7 2011/01/21 21:47:58 ragge Exp $	*/
+/*	$Id: local.c,v 1.12 2011/06/05 10:29:10 ragge Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -11,8 +11,6 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission
  *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
@@ -102,8 +100,7 @@ clocal(NODE *p)
 		if (l->n_type < INT || l->n_type == LONGLONG || 
 		    l->n_type == ULONGLONG) {
 			/* float etc? */
-			p->n_left = block(SCONV, l, NIL,
-			    UNSIGNED, 0, MKSUE(UNSIGNED));
+			p->n_left = block(SCONV, l, NIL, UNSIGNED, 0, 0);
 			break;
 		}
 		/* if left is SCONV, cannot remove */
@@ -204,7 +201,7 @@ clocal(NODE *p)
 				cerror("unknown type %d", m);
 			}
 			l->n_type = m;
-			l->n_sue = MKSUE(m);
+			l->n_sue = 0;
 			nfree(p);
 			return l;
 		} else if (l->n_op == FCON) {
@@ -212,7 +209,7 @@ clocal(NODE *p)
 			l->n_sp = NULL;
 			l->n_op = ICON;
 			l->n_type = m;
-			l->n_sue = MKSUE(m);
+			l->n_sue = 0;
 			nfree(p);
 			return clocal(l);
 		}
@@ -243,18 +240,11 @@ clocal(NODE *p)
 			p->n_left = buildtree(ADDROF, l, NIL);
 		break;
 
-	case PMCONV:
-	case PVCONV:
-		r = p;
-		p = buildtree(o == PMCONV ? MUL : DIV, p->n_left, p->n_right);
-		nfree(r);
-		break;
-
 	case FORCE:
 		/* put return value in return reg */
 		p->n_op = ASSIGN;
 		p->n_right = p->n_left;
-		p->n_left = block(REG, NIL, NIL, p->n_type, 0, MKSUE(INT));
+		p->n_left = block(REG, NIL, NIL, p->n_type, 0, 0);
 		p->n_left->n_rval = p->n_left->n_type == BOOL ? 
 		    RETREG(CHAR) : RETREG(p->n_type);
 		break;
@@ -279,7 +269,7 @@ myp2tree(NODE *p)
 
 	sp = inlalloc(sizeof(struct symtab));
 	sp->sclass = STATIC;
-	sp->ssue = MKSUE(p->n_type);
+	sp->ssue = 0;
 	sp->slevel = 1; /* fake numeric label */
 	sp->soffset = getlab();
 	sp->sflags = 0;
@@ -302,15 +292,6 @@ andable(NODE *p)
 }
 
 /*
- * at the end of the arguments of a ftn, set the automatic offset
- */
-void
-cendarg()
-{
-	autooff = AUTOINIT;
-}
-
-/*
  * Return 1 if a variable of type type is OK to put in register.
  */
 int
@@ -320,30 +301,6 @@ cisreg(TWORD t)
 	    t == LONGLONG || t == ULONGLONG)
 		return 0; /* not yet */
 	return 1;
-}
-
-/*
- * return a node, for structure references, which is suitable for
- * being added to a pointer of type t, in order to be off bits offset
- * into a structure
- * t, d, and s are the type, dimension offset, and sizeoffset
- * For pdp10, return the type-specific index number which calculation
- * is based on its size. For example, short a[3] would return 3.
- * Be careful about only handling first-level pointers, the following
- * indirections must be fullword.
- */
-NODE *
-offcon(OFFSZ off, TWORD t, union dimfun *d, struct suedef *sue)
-{
-	register NODE *p;
-
-	if (xdebug)
-		printf("offcon: OFFSZ %lld type %x dim %p siz %d\n",
-		    off, t, d, sue->suesize);
-
-	p = bcon(0);
-	p->n_lval = off/SZCHAR;	/* Default */
-	return(p);
 }
 
 /*
@@ -359,7 +316,7 @@ spalloc(NODE *t, NODE *p, OFFSZ off)
 	p = buildtree(MUL, p, bcon(off/SZCHAR)); /* XXX word alignment? */
 
 	/* sub the size from sp */
-	sp = block(REG, NIL, NIL, p->n_type, 0, MKSUE(INT));
+	sp = block(REG, NIL, NIL, p->n_type, 0, 0);
 	sp->n_lval = 0;
 	sp->n_rval = STKREG;
 	ecomp(buildtree(MINUSEQ, sp, p));
@@ -403,7 +360,7 @@ instring(struct symtab *sp)
 	printf("%s0\n", cnt ? "" : ".byte ");
 }
 
-static int inbits, inval;
+static int inbits, xinval;
 
 /*
  * set fsz bits in sequence to zero.
@@ -422,8 +379,8 @@ zbits(OFFSZ off, int fsz)
 			return;
 		} else {
 			fsz -= m;
-			printf("\t.byte %d\n", inval);
-			inval = inbits = 0;
+			printf("\t.byte %d\n", xinval);
+			xinval = inbits = 0;
 		}
 	}
 	if (fsz >= SZCHAR) {
@@ -431,7 +388,7 @@ zbits(OFFSZ off, int fsz)
 		fsz -= (fsz/SZCHAR) * SZCHAR;
 	}
 	if (fsz) {
-		inval = 0;
+		xinval = 0;
 		inbits = fsz;
 	}
 }
@@ -447,14 +404,14 @@ infld(CONSZ off, int fsz, CONSZ val)
 		    off, fsz, val, inbits);
 	val &= ((CONSZ)1 << fsz)-1;
 	while (fsz + inbits >= SZCHAR) {
-		inval |= (val << inbits);
-		printf("\t.byte %d\n", inval & 255);
+		xinval |= (val << inbits);
+		printf("\t.byte %d\n", xinval & 255);
 		fsz -= (SZCHAR - inbits);
 		val >>= (SZCHAR - inbits);
-		inval = inbits = 0;
+		xinval = inbits = 0;
 	}
 	if (fsz) {
-		inval |= (val << inbits);
+		xinval |= (val << inbits);
 		inbits += fsz;
 	}
 }
@@ -465,7 +422,7 @@ infld(CONSZ off, int fsz, CONSZ val)
  * off is bit offset from the beginning of the aggregate
  * fsz is the number of bits this is referring to
  */
-void
+int
 ninval(CONSZ off, int fsz, NODE *p)
 {
 #ifdef __pdp11__
@@ -477,16 +434,7 @@ ninval(CONSZ off, int fsz, NODE *p)
 
 	t = p->n_type;
 	if (t > BTMASK)
-		t = INT; /* pointer */
-
-	while (p->n_op == SCONV || p->n_op == PCONV) {
-		NODE *l = p->n_left;
-		l->n_type = p->n_type;
-		p = l;
-	}
-
-	if (p->n_op != ICON && p->n_op != FCON)
-		cerror("ninval: init node not constant");
+		p->n_type = t = INT; /* pointer */
 
 	if (p->n_op == ICON && p->n_sp != NULL && DEUNSIGN(t) != INT)
 		uerror("element not constant");
@@ -518,14 +466,6 @@ ninval(CONSZ off, int fsz, NODE *p)
 		}
 		printf("\n");
 		break;
-	case BOOL:
-		if (p->n_lval > 1)
-			p->n_lval = p->n_lval != 0;
-		/* FALLTHROUGH */
-	case CHAR:
-	case UCHAR:
-		printf("\t.byte %o\n", (int)p->n_lval & 0xff);
-		break;
 #ifdef __pdp11__
 	case FLOAT:
 		u.f = (float)p->n_dcon;
@@ -548,8 +488,9 @@ ninval(CONSZ off, int fsz, NODE *p)
 		break;
 #endif
 	default:
-		cerror("ninval");
+		return 0;
 	}
+	return 1;
 }
 
 /* make a name look like an external name in the local machine */

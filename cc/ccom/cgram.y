@@ -1,4 +1,4 @@
-/*	$Id: cgram.y,v 1.319 2011/01/27 18:00:32 ragge Exp $	*/
+/*	$Id: cgram.y,v 1.344 2012/04/22 12:49:07 ragge Exp $	*/
 
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
@@ -12,8 +12,6 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission
  *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
@@ -123,6 +121,7 @@
 %token	C_TYPEOF	/* COMPAT_GCC */
 %token	C_ATTRIBUTE	/* COMPAT_GCC */
 %token	PCC_OFFSETOF
+%token	GCC_DESIG
 
 /*
  * Precedence
@@ -239,7 +238,7 @@ struct savbc {
 		designator_list designator xasm oplist oper cnstr funtype
 		typeof attribute attribute_specifier /* COMPAT_GCC */
 		attribute_list attr_spec_list attr_var /* COMPAT_GCC */
-%type <strp>	string C_STRING
+%type <strp>	string C_STRING GCC_DESIG
 %type <rp>	str_head
 %type <symp>	xnfdeclarator clbrace enum_head
 
@@ -262,7 +261,7 @@ external_def:	   funtype kr_args compoundstmt { fend(); }
 		;
 
 funtype:	  /* no type given */ declarator {
-		    fundef(mkty(INT, 0, MKAP(INT)), $1);
+		    fundef(mkty(INT, 0, 0), $1);
 		    cftnsp->sflags |= NORETYP;
 		}
 		| declaration_specifiers declarator { fundef($1,$2); }
@@ -308,7 +307,7 @@ cf_spec:	   C_CLASS { $$ = $1; }
 			$$ = block(QUALIFIER, NIL, NIL, 0, 0, 0); }
 		;
 
-typeof:		   C_TYPEOF '(' term ')' { $$ = tyof(eve($3)); }
+typeof:		   C_TYPEOF '(' e ')' { $$ = tyof(eve($3)); }
 		|  C_TYPEOF '(' cast_type ')' { TYMFIX($3); $$ = tyof($3); }
 		;
 
@@ -417,6 +416,7 @@ parameter_declaration:
 			$$ = block(TYMERGE, $1, $2, INT, 0, gcc_attr_parse($3));
 		}
 		|  declaration_specifiers abstract_declarator { 
+			$1->n_ap = attr_add($1->n_ap, $2->n_ap);
 			$$ = block(TYMERGE, $1, $2, INT, 0, 0);
 		}
 		|  declaration_specifiers {
@@ -451,15 +451,19 @@ abstract_declarator:
 		|  abstract_declarator '[' e ']' attr_var {
 			$$ = block(LB, $1, $3, INT, 0, gcc_attr_parse($5));
 		}
-		|  '(' ')' { $$ = bdty(UCALL, bdty(NAME, NULL)); }
-		|  '(' ib2 parameter_type_list ')' {
-			$$ = bdty(CALL, bdty(NAME, NULL), $3);
+		|  '(' ')' attr_var {
+			$$ = bdty(UCALL, bdty(NAME, NULL));
+			$$->n_ap = gcc_attr_parse($3);
 		}
-		|  abstract_declarator '(' ')' {
-			$$ = bdty(UCALL, $1);
+		|  '(' ib2 parameter_type_list ')' attr_var {
+			$$ = block(CALL, bdty(NAME, NULL), $3, INT, 0,
+			    gcc_attr_parse($5));
 		}
-		|  abstract_declarator '(' ib2 parameter_type_list ')' {
-			$$ = bdty(CALL, $1, $4);
+		|  abstract_declarator '(' ')' attr_var {
+			$$ = block(UCALL, $1, NIL, INT, 0, gcc_attr_parse($4));
+		}
+		|  abstract_declarator '(' ib2 parameter_type_list ')' attr_var {
+			$$ = block(CALL, $1, $4, INT, 0, gcc_attr_parse($6));
 		}
 		;
 
@@ -550,8 +554,7 @@ struct_dcl:	   str_head '{' struct_dcl_list '}' {
 			if (pragma_allpacked) {
 				p = bdty(CALL, bdty(NAME, "packed"),
 				    bcon(pragma_allpacked));
-				$$ = cmop(biop(ATTRIB, p, 0), $$);
-			}
+				$$->n_ap = attr_add($$->n_ap,gcc_attr_parse(p)); }
 		}
 		|  C_STRUCT attr_var C_NAME { 
 			$$ = rstruct($3,$1);
@@ -689,12 +692,19 @@ init_declarator:   declarator attr_var { init_declarator($<nodep>0, $1, 0, $2);}
 			init_declarator($<nodep>0, $1, 0, $6);
 #endif
 		}
-		|  xnfdeclarator '=' e { simpleinit($1, eve($3)); xnf = NULL; }
-		|  xnfdeclarator '=' begbr init_list optcomma '}' {
-			endinit();
+		|  xnfdeclarator '=' e { 
+			if ($1->sclass == STATIC || $1->sclass == EXTDEF)
+				statinit++;
+			simpleinit($1, eve($3));
+			if ($1->sclass == STATIC || $1->sclass == EXTDEF)
+				statinit--;
 			xnf = NULL;
 		}
- /*COMPAT_GCC*/	|  xnfdeclarator '=' begbr '}' { endinit(); xnf = NULL; }
+		|  xnfdeclarator '=' begbr init_list optcomma '}' {
+			endinit(0);
+			xnf = NULL;
+		}
+ /*COMPAT_GCC*/	|  xnfdeclarator '=' begbr '}' { endinit(0); xnf = NULL; }
 		|  xnfdeclarator '=' addrlbl { simpleinit($1, $3); xnf = NULL; }
 		;
 
@@ -712,6 +722,7 @@ init_list:	   designation initializer { dainit($1, $2); }
 		;
 
 designation:	   designator_list '=' { desinit($1); $$ = NIL; }
+		|  GCC_DESIG { desinit(bdty(NAME, $1)); $$ = NIL; }
 		|  '[' e C_ELLIPSIS e ']' '=' { $$ = biop(CM, $2, $4); }
 		|  { $$ = NIL; }
 		;
@@ -771,7 +782,6 @@ begin:		  '{' {
 			bc->contlab = autooff;
 			bc->next = savctx;
 			savctx = bc;
-			bccode();
 			if (!isinlining && sspflag && blevel == 2)
 				sspstart();
 		}
@@ -817,6 +827,7 @@ statement:	   e ';' { ecomp(eve($1)); symclear(blevel); }
 			    if( (flostat&FBRK) || !(flostat&FLOOP) ) reached = 1;
 			    else reached = 0;
 			    resetbc(0);
+			    symclear(blevel); /* if declaration inside for() */
 			    }
 		| switchpart statement
 			{ if( reached ) branch( brklab );
@@ -997,8 +1008,7 @@ switchpart:	   C_SWITCH  '('  e ')' {
 			savebc();
 			brklab = getlab();
 			$3 = eve($3);
-			if (($3->n_type != BOOL && $3->n_type > ULONGLONG) ||
-			    $3->n_type < CHAR) {
+			if (!ISINTEGER($3->n_type)) {
 				uerror("switch expression must have integer "
 				       "type");
 				t = INT;
@@ -1006,7 +1016,7 @@ switchpart:	   C_SWITCH  '('  e ')' {
 				$3 = intprom($3);
 				t = $3->n_type;
 			}
-			p = tempnode(0, t, 0, MKAP(t));
+			p = tempnode(0, t, 0, 0);
 			num = regno(p);
 			ecomp(buildtree(ASSIGN, p, $3));
 			branch( $$ = getlab());
@@ -1095,19 +1105,20 @@ term:		   term C_INCOP {  $$ = biop($2, $1, bcon(1)); }
 			inattr = $<intval>2;
 		}
 		|  C_ALIGNOF xa '(' cast_type ')' {
+			int al;
 			TYMFIX($4);
-			int al = talign($4->n_type, $4->n_ap);
+			al = talign($4->n_type, $4->n_ap);
 			$$ = bcon(al/SZCHAR);
 			inattr = $<intval>2;
 			tfree($4);
 		}
 		| '(' cast_type ')' clbrace init_list optcomma '}' {
-			endinit();
+			endinit(0);
 			$$ = bdty(NAME, $4);
 			$$->n_op = CLOP;
 		}
 		| '(' cast_type ')' clbrace '}' {
-			endinit();
+			endinit(0);
 			$$ = bdty(NAME, $4);
 			$$->n_op = CLOP;
 		}
@@ -1133,8 +1144,7 @@ term:		   term C_INCOP {  $$ = biop($2, $1, bcon(1)); }
 				$$ = $5;
 			}
 			$$ = biop(ADDROF, $$, NIL);
-			$3 = block(NAME, NIL, NIL, ENUNSIGN(INTPTR), 0,
-			    MKAP(ENUNSIGN(INTPTR)));
+			$3 = block(NAME, NIL, NIL, ENUNSIGN(INTPTR), 0, 0);
 			$$ = biop(CAST, $3, $$);
 		}
 		|  C_ICON { $$ = $1; }
@@ -1292,7 +1302,7 @@ addcase(NODE *p)
 	struct swents **put, *w, *sw = tmpalloc(sizeof(struct swents));
 	CONSZ val;
 
-	p = optim(p);  /* change enum to ints */
+	p = optloop(p);  /* change enum to ints */
 	if (p->n_op != ICON || p->n_sp != NULL) {
 		uerror( "non-constant case expression");
 		return;
@@ -1304,7 +1314,7 @@ addcase(NODE *p)
 
 	if (DEUNSIGN(swpole->type) != DEUNSIGN(p->n_type)) {
 		val = p->n_lval;
-		p = makety(p, swpole->type, 0, 0, MKAP(swpole->type));
+		p = makety(p, swpole->type, 0, 0, 0);
 		if (p->n_op != ICON)
 			cerror("could not cast case value to type of switch "
 			       "expression");
@@ -1425,7 +1435,7 @@ genswitch(int num, TWORD type, struct swents **p, int n)
 	/* simple switch code */
 	for (i = 1; i <= n; ++i) {
 		/* already in 1 */
-		r = tempnode(num, type, 0, MKAP(type));
+		r = tempnode(num, type, 0, 0);
 		q = xbcon(p[i]->sval, NULL, type);
 		r = buildtree(NE, r, clocal(q));
 		cbranch(buildtree(NOT, r, NIL), bcon(p[i]->slab));
@@ -1471,6 +1481,8 @@ init_declarator(NODE *tn, NODE *p, int assign, NODE *a)
 			uerror("cannot initialise function");
 		defid(p, uclass(class));
 		sp = p->n_sp;
+		if (sp->sdf->dfun == 0 && !issyshdr)
+			warner(Wstrict_prototypes);
 		if (parlink) {
 			/* dynamic sized arrays in prototypes */
 			tfree(parlink); /* Free delayed tree */
@@ -1478,6 +1490,8 @@ init_declarator(NODE *tn, NODE *p, int assign, NODE *a)
 		}
 	}
 	tfree(p);
+	if (issyshdr)
+		sp->sflags |= SINSYS; /* declared in system header */
 	return sp;
 }
 
@@ -1620,6 +1634,11 @@ fundef(NODE *tp, NODE *p)
 	}
 
 	p = typ = tymerge(tp, p);
+#ifdef GCC_COMPAT
+	/* gcc seems to discard __builtin_ when declaring functions */
+	if (strncmp("__builtin_", (char *)typ->n_sp, 10) == 0)
+		typ->n_sp = (struct symtab *)((char *)typ->n_sp + 10);
+#endif
 	s = typ->n_sp = lookup((char *)typ->n_sp, 0); /* XXX */
 
 	oclass = s->sclass;
@@ -1640,6 +1659,8 @@ fundef(NODE *tp, NODE *p)
 
 	cftnsp = s;
 	defid(p, class);
+	if (s->sdf->dfun == 0 && !issyshdr)
+		warner(Wstrict_prototypes);
 #ifdef GCC_COMPAT
 	if (attr_find(p->n_ap, GCC_ATYP_ALW_INL)) {
 		/* Temporary turn on temps to make always_inline work */
@@ -1706,7 +1727,8 @@ olddecl(NODE *p, NODE *a)
 	if (ISARY(s->stype)) {
 		s->stype += (PTR-ARY);
 		s->sdf++;
-	}
+	} else if (s->stype == FLOAT)
+		s->stype = DOUBLE;
 	if (a)
 		attr_add(s->sap, gcc_attr_parse(a));
 	nfree(p);
@@ -1860,7 +1882,7 @@ simname(char *s)
 NODE *
 biop(int op, NODE *l, NODE *r)
 {
-	return block(op, l, r, INT, 0, MKAP(INT));
+	return block(op, l, r, INT, 0, 0);
 }
 
 static NODE *
@@ -1872,7 +1894,7 @@ cmop(NODE *l, NODE *r)
 static NODE *
 voidcon(void)
 {
-	return block(ICON, NIL, NIL, STRTY, 0, MKAP(VOID));
+	return block(ICON, NIL, NIL, STRTY, 0, 0);
 }
 
 /* Support for extended assembler a' la' gcc style follows below */
@@ -1962,6 +1984,20 @@ tyof(NODE *p)
 	return q;
 }
 #endif
+
+/*
+ * Rewrite ++/-- to (t=p, p++, t) ops on types that do not act act as usual.
+ */
+static NODE *
+rewincop(NODE *p1, NODE *p2, int op)
+{
+	NODE *t, *r;
+
+	t = cstknode(p1->n_type, 0, 0);
+	r = buildtree(ASSIGN, ccopy(t), ccopy(p1));
+	r = buildtree(COMOP, r, buildtree(op, p1, eve(p2)));
+	return buildtree(COMOP, r, t);
+}
 
 /*
  * Traverse an unhandled expression tree bottom-up and call buildtree()
@@ -2054,7 +2090,7 @@ eve(NODE *p)
 			if (sp->stype == UNDEF) {
 				p1->n_type = FTN|INT;
 				p1->n_sp = sp;
-				p1->n_ap = MKAP(INT);
+				p1->n_ap = NULL;
 				defid(p1, EXTERN);
 			}
 			nfree(p1);
@@ -2094,8 +2130,6 @@ eve(NODE *p)
 		break;
 #endif
 	case MOD:
-	case INCR:
-	case DECR:
 	case CM:
 	case GT:
 	case GE:
@@ -2113,15 +2147,59 @@ eve(NODE *p)
 	case EREQ:
 	case OREQ:
 	case ANDEQ:
+	case QUEST:
+	case COLON:
+		p1 = eve(p1);
+eve2:		r = buildtree(p->n_op, p1, eve(p2));
+		break;
+
+	case INCR:
+	case DECR:
+		p1 = eve(p1);
+		if (p1->n_type >= FLOAT && p1->n_type <= LDOUBLE) {
+			/* ++/-- on floats isn't ((d+=1)-1) */
+			/* rewrite to (t=d,d++,t) */
+			/* XXX - side effects */
+			r = rewincop(p1, p2, p->n_op);
+			break;
+		}
+		if (p1->n_type != BOOL)
+			goto eve2;
+		/* Hey, fun.  ++ will always be 1, and -- will toggle result */
+		if (p->n_op == INCR) {
+			/* (t=d,d=1,t) */
+			r = rewincop(p1, p2, ASSIGN);
+		} else {
+			/* (t=d,d^=1,t) */
+			r = rewincop(p1, p2, EREQ);
+		}
+		break;
+
+	case MODEQ:
 	case MINUSEQ:
 	case PLUSEQ:
 	case MULEQ:
 	case DIVEQ:
-	case MODEQ:
-	case QUEST:
-	case COLON:
 		p1 = eve(p1);
-		r = buildtree(p->n_op, p1, eve(p2));
+		p2 = eve(p2);
+#ifndef NO_COMPLEX
+		if (ANYCX(p1) || ANYCX(p2)) {
+			r = cxop(UNASG p->n_op, ccopy(p1), p2);
+			r = cxop(ASSIGN, p1, r);
+			break;
+		} else if (ISITY(p1->n_type) || ISITY(p2->n_type)) {
+			r = imop(UNASG p->n_op, ccopy(p1), p2);
+			r = cxop(ASSIGN, p1, r);
+			break;
+		}
+		/* FALLTHROUGH */
+#endif
+		if (p1->n_type == BOOL) {
+			r = buildtree(UNASG p->n_op, ccopy(p1), p2);
+			r = buildtree(ASSIGN, p1, r);
+		} else {
+			r = buildtree(p->n_op, p1, p2);
+		}
 		break;
 
 	case STRING:
@@ -2162,7 +2240,7 @@ eve(NODE *p)
 int
 con_e(NODE *p)
 {
-	return icons(eve(p));
+	return icons(optloop(eve(p)));
 }
 
 void
@@ -2234,7 +2312,7 @@ aryfix(NODE *p)
 
 	for (q = p; q->n_op != NAME; q = q->n_left) {
 		if (q->n_op == LB) {
-			q->n_right = optim(eve(q->n_right));
+			q->n_right = optloop(eve(q->n_right));
 			if ((blevel == 0 || rpole != NULL) &&
 			    !nncon(q->n_right))
 				uerror("array size not constant"); 

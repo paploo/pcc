@@ -1,4 +1,4 @@
-/*	$Id: inline.c,v 1.37.2.2 2011/02/26 11:31:45 ragge Exp $	*/
+/*	$Id: inline.c,v 1.48 2012/04/22 21:07:41 plunky Exp $	*/
 /*
  * Copyright (c) 2003, 2008 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -87,7 +87,7 @@ tcnt(NODE *p, void *arg)
 		SLIST_FIRST(&ipole)->flags &= ~CANINL; /* no stack refs */
 	if (p->n_op == NAME || p->n_op == ICON)
 		p->n_sp = NULL; /* let symtabs be freed for inline funcs */
-	if (nflag)
+	if (ndebug)
 		printf("locking node %p\n", p);
 }
 
@@ -160,26 +160,41 @@ inline_start(struct symtab *sp)
 /*
  * End of an inline function. In C99 an inline function declared "extern"
  * should also have external linkage and are therefore printed out.
- * But; this is the opposite for gcc inline functions, hence special
- * care must be taken to handle that specific case.
+ *
+ * Gcc inline syntax is a mess, see matrix below on emitting functions:
+ *		    without extern
+ *	-std=		-	gnu89	gnu99	
+ *	gcc 3.3.5:	ja	ja	ja
+ *	gcc 4.1.3:	ja	ja	ja
+ *	gcc 4.3.1	ja	ja	nej	
+ * 
+ *		     with extern
+ *	gcc 3.3.5:	nej	nej	nej
+ *	gcc 4.1.3:	nej	nej	nej
+ *	gcc 4.3.1	nej	nej	ja	
+ *
+ * The attribute gnu_inline sets gnu89 behaviour.
+ * Since pcc mimics gcc 4.3.1 that is the behaviour we emulate.
  */
 void
-inline_end()
+inline_end(void)
 {
+	struct symtab *sp = cifun->sp;
 
 	SDEBUG(("inline_end()\n"));
 
 	if (sdebug)printip(&cifun->shead);
 	isinlining = 0;
 
-	if (attr_find(cifun->sp->sap, GCC_ATYP_GNU_INLINE)) {
-		if (cifun->sp->sclass == EXTDEF)
-			cifun->sp->sclass = 0;
+	if (sp->sclass != STATIC &&
+	    (attr_find(sp->sap, GCC_ATYP_GNU_INLINE) || xgnu89)) {
+		if (sp->sclass == EXTDEF)
+			sp->sclass = 0;
 		else
-			cifun->sp->sclass = EXTDEF;
+			sp->sclass = EXTDEF;
 	}
 
-	if (cifun->sp->sclass == EXTDEF) {
+	if (sp->sclass == EXTDEF) {
 		cifun->flags |= REFD;
 		inline_prtout();
 	}
@@ -276,7 +291,7 @@ puto(struct istat *w)
  * printout functions that are referenced.
  */
 void
-inline_prtout()
+inline_prtout(void)
 {
 	struct istat *w;
 	int gotone = 0;
@@ -284,6 +299,7 @@ inline_prtout()
 	SLIST_FOREACH(w, &ipole, link) {
 		if ((w->flags & (REFD|WRITTEN)) == REFD &&
 		    !DLIST_ISEMPTY(&w->shead, qelem)) {
+			locctr(PROG, w->sp);
 			defloc(w->sp);
 			puto(w);
 			w->flags |= WRITTEN;
@@ -381,8 +397,7 @@ inlinetree(struct symtab *sp, NODE *f, NODE *ap)
 	extern int crslab, tvaloff;
 	struct istat *is = findfun(sp);
 	struct interpass *ip, *ipf, *ipl;
-	int lmin, stksz, l0, l1, l2, gainl;
-	OFFSZ stkoff;
+	int lmin, l0, l1, l2, gainl;
 	NODE *p, *rp;
 
 	if (is == NULL || nerrors) {
@@ -416,7 +431,6 @@ inlinetree(struct symtab *sp, NODE *f, NODE *ap)
 	}
 #endif
 
-	stkoff = stksz = 0;
 	/* emit jumps to surround inline function */
 	branch(l0 = getlab());
 	plabel(l1 = getlab());
@@ -491,7 +505,7 @@ inlinetree(struct symtab *sp, NODE *f, NODE *ap)
 	branch(l2);
 	plabel(l0);
 
-	rp = block(GOTO, bcon(l1), NIL, INT, 0, MKAP(INT));
+	rp = block(GOTO, bcon(l1), NIL, INT, 0, 0);
 	if (is->retval)
 		p = tempnode(is->retval + toff, DECREF(sp->stype),
 		    sp->sdf, sp->sap);
@@ -511,7 +525,9 @@ inlinetree(struct symtab *sp, NODE *f, NODE *ap)
 void
 inline_args(struct symtab **sp, int nargs)
 {
+	union arglist *al;
 	struct istat *cf;
+	TWORD t;
 	int i;
 
 	SDEBUG(("inline_args\n"));
@@ -521,6 +537,20 @@ inline_args(struct symtab **sp, int nargs)
 	 * - function has varargs
 	 * - function args are volatile, checked if no temp node is asg'd.
 	 */
+	/* XXX - this is ugly, invent something better */
+	if (cf->sp->sdf->dfun == NULL)
+		return; /* no prototype */
+	for (al = cf->sp->sdf->dfun; al->type != TNULL; al++) {
+		t = al->type;
+		if (t == TELLIPSIS)
+			return; /* cannot inline */
+		if (ISSOU(BTYPE(t)))
+			al++;
+		for (; t > BTMASK; t = DECREF(t))
+			if (ISARY(t) || ISFTN(t))
+				al++;
+	}
+
 	if (nargs) {
 		for (i = 0; i < nargs; i++)
 			if ((sp[i]->sflags & STNODE) == 0)

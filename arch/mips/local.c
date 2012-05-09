@@ -1,4 +1,4 @@
-/*	$Id: local.c,v 1.24 2011/01/21 21:47:58 ragge Exp $	*/
+/*	$Id: local.c,v 1.32 2012/04/22 21:05:27 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -11,8 +11,6 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission
  *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
@@ -35,8 +33,6 @@
 #include "pass1.h"
 
 #define IALLOC(sz) (isinlining ? permalloc(sz) : tmpalloc(sz))
-
-static int inbits, inval;
 
 /* this is called to do local transformations on
  * an expression tree preparitory to its being
@@ -82,8 +78,7 @@ clocal(NODE *p)
 
 		p = tempnode(tmpnr, r->n_type, r->n_df, r->n_ap);
 		if (isptrvoid) {
-			p = block(PCONV, p, NIL, PTR+VOID,
-			    p->n_df, MKAP(PTR+VOID));
+			p = block(PCONV, p, NIL, PTR+VOID, p->n_df, 0);
 		}
 		p = buildtree(COMOP, r, p);
 		break;
@@ -124,9 +119,9 @@ clocal(NODE *p)
 		if (p->n_type != CHAR && p->n_type != UCHAR && 
 		    p->n_type != SHORT && p->n_type != USHORT)
 			break;
-		p->n_left = block(SCONV, p->n_left, NIL, INT, 0, MKAP(INT));
+		p->n_left = block(SCONV, p->n_left, NIL, INT, 0, 0);
 		p->n_type = INT;
-		p->n_ap = MKAP(INT);
+		p->n_ap = 0;
 		p->n_rval = SZINT;
 		break;
 
@@ -173,8 +168,7 @@ clocal(NODE *p)
 		}
 		if (l->n_type < INT || DEUNSIGN(l->n_type) == LONGLONG) {
 			/* float etc? */
-			p->n_left = block(SCONV, l, NIL,
-			    UNSIGNED, 0, MKAP(UNSIGNED));
+			p->n_left = block(SCONV, l, NIL, UNSIGNED, 0, 0);
 			break;
 		}
 		/* if left is SCONV, cannot remove */
@@ -208,7 +202,8 @@ clocal(NODE *p)
 		}
 
 		if ((p->n_type & TMASK) == 0 && (l->n_type & TMASK) == 0 &&
-		    btattr[p->n_type].atypsz == btattr[l->n_type].atypsz) {
+		    tsize(p->n_type, p->n_df, p->n_ap) ==
+		    tsize(l->n_type, l->n_df, l->n_ap)) {
 			if (p->n_type != FLOAT && p->n_type != DOUBLE &&
 			    l->n_type != FLOAT && l->n_type != DOUBLE &&
 			    l->n_type != LDOUBLE && p->n_type != LDOUBLE) {
@@ -310,7 +305,7 @@ clocal(NODE *p)
 			l->n_sp = NULL;
 			l->n_op = ICON;
 			l->n_type = m;
-			l->n_ap = MKAP(m);
+			l->n_ap = 0;
 			nfree(p);
 			p = clocal(l);
 		}
@@ -323,24 +318,17 @@ clocal(NODE *p)
 		if (o == MOD && p->n_type != CHAR && p->n_type != SHORT)
 			break;
 		/* make it an int division by inserting conversions */
-		p->n_left = block(SCONV, p->n_left, NIL, INT, 0, MKAP(INT));
-		p->n_right = block(SCONV, p->n_right, NIL, INT, 0, MKAP(INT));
-		p = block(SCONV, p, NIL, p->n_type, 0, MKAP(p->n_type));
+		p->n_left = block(SCONV, p->n_left, NIL, INT, 0, 0);
+		p->n_right = block(SCONV, p->n_right, NIL, INT, 0, 0);
+		p = block(SCONV, p, NIL, p->n_type, 0, 0);
 		p->n_left->n_type = INT;
-		break;
-
-	case PMCONV:
-	case PVCONV:
-                if( p->n_right->n_op != ICON ) cerror( "bad conversion", 0);
-                nfree(p);
-                p = buildtree(o==PMCONV?MUL:DIV, p->n_left, p->n_right);
 		break;
 
 	case FORCE:
 		/* put return value in return reg */
 		p->n_op = ASSIGN;
 		p->n_right = p->n_left;
-		p->n_left = block(REG, NIL, NIL, p->n_type, 0, MKAP(INT));
+		p->n_left = block(REG, NIL, NIL, p->n_type, 0, 0);
 		p->n_left->n_rval = RETREG(p->n_type);
 		break;
 	}
@@ -367,7 +355,7 @@ myp2tree(NODE *p)
  
 	sp = IALLOC(sizeof(struct symtab));
 	sp->sclass = STATIC;
-	sp->sap = MKAP(p->n_type);
+	sp->sap = 0;
 	sp->slevel = 1; /* fake numeric label */
 	sp->soffset = getlab();
 	sp->sflags = 0;
@@ -375,7 +363,7 @@ myp2tree(NODE *p)
 	sp->squal = (CON >> TSHIFT);
 
 	defloc(sp);
-	ninval(0, sp->sap->atypsz, p);
+	ninval(0, tsize(sp->stype, sp->sdf, sp->sap), p);
 
 	p->n_op = NAME;
 	p->n_lval = 0;
@@ -391,15 +379,6 @@ andable(NODE *p)
 }
 
 /*
- * at the end of the arguments of a ftn, set the automatic offset
- */
-void
-cendarg()
-{
-	autooff = AUTOINIT;
-}
-
-/*
  * is an automatic variable of type t OK for a register variable
  */
 int
@@ -408,27 +387,6 @@ cisreg(TWORD t)
 	if (t == INT || t == UNSIGNED || t == LONG || t == ULONG)
 		return(1);
 	return 0; /* XXX - fix reg assignment in pftn.c */
-}
-
-/*
- * return a node, for structure references, which is suitable for
- * being added to a pointer of type t, in order to be off bits offset
- * into a structure
- * t, d, and s are the type, dimension offset, and sizeoffset
- * Be careful about only handling first-level pointers, the following
- * indirections must be fullword.
- */
-NODE *
-offcon(OFFSZ off, TWORD t, union dimfun *d, struct attr *sue)
-{
-	NODE *p;
-
-	if (xdebug)
-		printf("offcon: OFFSZ %lld type %x dim %p siz %d\n",
-		    off, t, d, 0);
-
-	p = bcon(off/SZCHAR);
-	return p;
 }
 
 /*
@@ -463,7 +421,7 @@ spalloc(NODE *t, NODE *p, OFFSZ off)
  * print out a constant node
  * mat be associated with a label
  */
-void
+int
 ninval(CONSZ off, int fsz, NODE *p)
 {
         union { float f; double d; int i[2]; } u;
@@ -475,10 +433,7 @@ ninval(CONSZ off, int fsz, NODE *p)
 
         t = p->n_type;
         if (t > BTMASK)
-                t = INT; /* pointer */
-
-        if (p->n_op != ICON && p->n_op != FCON)
-                cerror("ninval: init node not constant");
+		p->n_type = t = INT; /* pointer */
 
         if (p->n_op == ICON && p->n_sp != NULL && DEUNSIGN(t) != INT)
                 uerror("element not constant");
@@ -505,10 +460,6 @@ ninval(CONSZ off, int fsz, NODE *p)
 		}
 #endif
                 break;
-        case BOOL:
-                if (p->n_lval > 1)
-                        p->n_lval = p->n_lval != 0;
-                /* FALLTHROUGH */
         case INT:
         case UNSIGNED:
                 printf("\t.word " CONFMT, (CONSZ)p->n_lval);
@@ -523,12 +474,8 @@ ninval(CONSZ off, int fsz, NODE *p)
                 break;
         case SHORT:
         case USHORT:
-                printf("\t.half %d\n", (int)p->n_lval & 0xffff);
-                break;
-        case CHAR:
-        case UCHAR:
-                printf("\t.byte %d\n", (int)p->n_lval & 0xff);
-                break;
+		astypnames[SHORT] = astypnames[USHORT] = "\t.half";
+                return 0;
         case LDOUBLE:
         case DOUBLE:
                 u.d = (double)p->n_dcon;
@@ -545,8 +492,9 @@ ninval(CONSZ off, int fsz, NODE *p)
                 printf("\t.word\t0x%x\n", u.i[0]);
                 break;
         default:
-                cerror("ninval");
+                return 0;
         }
+	return 1;
 }
 
 /* make a name look like an external name in the local machine */
@@ -576,16 +524,6 @@ ctype(TWORD type)
 	return (type);
 }
 
-/* curid is a variable which is defined but
- * is not initialized (and not a function );
- * This routine returns the storage class for an uninitialized declaration
- */
-int
-noinit(void)
-{
-	return(EXTERN);
-}
-
 void
 calldec(NODE *p, NODE *q) 
 {
@@ -594,35 +532,6 @@ calldec(NODE *p, NODE *q)
 void
 extdec(struct symtab *q)
 {
-}
-
-/*
- * Print out a string of characters.
- * Assume that the assembler understands C-style escape
- * sequences.
- */
-void
-instring(struct symtab *sp)
-{
-	char *s, *str;
-
-	defloc(sp);
-	str = sp->sname;
-
-	/* be kind to assemblers and avoid long strings */
-	printf("\t.ascii \"");
-	for (s = str; *s != 0; ) {
-		if (*s++ == '\\') {
-			(void)esccon(&s);
-		}
-		if (s - str > 60) {
-			fwrite(str, 1, s - str, stdout);
-			printf("\"\n\t.ascii \"");
-			str = s;
-		}
-	}
-	fwrite(str, 1, s - str, stdout);
-	printf("\\0\"\n");
 }
 
 /* make a common declaration for id, if reasonable */
@@ -697,60 +606,6 @@ setloc1(int locc)
 		printf("\t.align 2\n");
 }
 #endif
-
-/*
- * Initialize a bitfield.
- */
-void
-infld(CONSZ off, int fsz, CONSZ val)
-{
-        if (idebug)
-                printf("infld off %lld, fsz %d, val %lld inbits %d\n",
-                    off, fsz, val, inbits);
-        val &= (1 << fsz)-1;
-        while (fsz + inbits >= SZCHAR) {
-                inval |= (val << inbits);
-                printf("\t.byte %d\n", inval & 255);
-                fsz -= (SZCHAR - inbits);
-                val >>= (SZCHAR - inbits);
-                inval = inbits = 0;
-        }
-        if (fsz) {
-                inval |= (val << inbits);
-                inbits += fsz;
-        }
-}
-
-/*
- * set fsz bits in sequence to zero.
- */
-void
-zbits(OFFSZ off, int fsz)
-{
-        int m;
-
-        if (idebug)
-                printf("zbits off %lld, fsz %d inbits %d\n", off, fsz, inbits);
-        if ((m = (inbits % SZCHAR))) {
-                m = SZCHAR - m;
-                if (fsz < m) {
-                        inbits += fsz;
-                        return;
-                } else {
-                        fsz -= m;
-                        printf("\t.byte %d\n", inval);
-                        inval = inbits = 0;
-                }
-        }
-        if (fsz >= SZCHAR) {
-                printf("\t.zero %d\n", fsz/SZCHAR);
-                fsz -= (fsz/SZCHAR) * SZCHAR;
-        }
-        if (fsz) {
-                inval = 0;
-                inbits = fsz;
-        }
-}
 
 /*
  * va_start(ap, last) implementation.

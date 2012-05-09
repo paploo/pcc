@@ -1,4 +1,4 @@
-/*	$Id: builtins.c,v 1.18.2.2 2011/03/29 15:56:24 ragge Exp $	*/
+/*	$Id: builtins.c,v 1.35 2012/03/22 18:04:41 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -41,42 +41,18 @@
 static NODE *
 builtin_alloca(NODE *f, NODE *a, TWORD rt)
 {
-	struct symtab *sp;
 	NODE *t, *u;
 
 #ifdef notyet
 	if (xnobuiltins)
 		return NULL;
 #endif
-	sp = f->n_sp;
 
-	t = tempnode(0, VOID|PTR, 0, MKAP(INT) /* XXX */);
-	u = tempnode(regno(t), VOID|PTR, 0, MKAP(INT) /* XXX */);
+	t = tempnode(0, VOID|PTR, 0, 0);
+	u = tempnode(regno(t), VOID|PTR, 0, 0);
 	spalloc(t, a, SZCHAR);
 	tfree(f);
 	return u;
-}
-
-/*
- * See if there is a goto in the tree.
- * XXX this function is a hack for a flaw in handling of 
- * compound expressions and inline functions and should not be 
- * needed.
- */
-static int
-hasgoto(NODE *p)
-{
-	int o = coptype(p->n_op);
-
-	if (o == LTYPE)
-		return 0;
-	if (p->n_op == GOTO)
-		return 1;
-	if (o == UTYPE)
-		return hasgoto(p->n_left);
-	if (hasgoto(p->n_left))
-		return 1;
-	return hasgoto(p->n_right);
 }
 
 /*
@@ -161,6 +137,167 @@ builtin_abs(NODE *f, NODE *a, TWORD rt)
 	return p;
 }
 
+#define	cmop(x,y) buildtree(COMOP, x, y)
+#define	lblnod(l) nlabel(l)
+
+#ifndef TARGET_CXZ
+/*
+ * Find number of beginning 0's in a word of type t.
+ * t should be deunsigned.
+ */
+static NODE *
+builtin_cxz(NODE *f, NODE *a, TWORD t, int isclz)
+{
+	NODE *t101, *t102;
+	NODE *rn, *p;
+	int l15, l16, l17;
+	int sz;
+
+	tfree(f);
+	t = ctype(t);
+	sz = (int)tsize(t, 0, 0);
+
+	t101 = tempnode(0, INT, 0, 0);
+	t102 = tempnode(0, t, 0, 0);
+	l15 = getlab();
+	l16 = getlab();
+	l17 = getlab();
+	rn = buildtree(ASSIGN, ccopy(t102), a);
+	rn = cmop(rn, buildtree(ASSIGN, ccopy(t101), bcon(0)));
+	rn = cmop(rn, lblnod(l16));
+
+	p = buildtree(CBRANCH, buildtree(GE, ccopy(t101), bcon(sz)), bcon(l15));
+	rn = cmop(rn, p);
+	if (isclz) {
+		p = buildtree(CBRANCH,
+		    buildtree(GE, ccopy(t102), bcon(0)), bcon(l17));
+	} else {
+		p = buildtree(CBRANCH,
+		    buildtree(EQ, buildtree(AND, ccopy(t102), bcon(1)),
+		    bcon(0)), bcon(l17));
+	}
+	rn = cmop(rn, p);
+
+	rn = cmop(rn, block(GOTO, bcon(l15), NIL, INT, 0, 0));
+
+	rn = cmop(rn, lblnod(l17));
+	rn = cmop(rn, buildtree(isclz ? LSEQ : RSEQ , t102, bcon(1)));
+
+	rn = cmop(rn, buildtree(INCR, ccopy(t101), bcon(1)));
+
+	rn = cmop(rn, block(GOTO, bcon(l16), NIL, INT, 0, 0));
+	rn = cmop(rn, lblnod(l15));
+	return cmop(rn, t101);
+}
+
+static NODE *
+builtin_clz(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, INT, 1);
+}
+
+static NODE *
+builtin_clzl(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, LONG, 1);
+}
+
+static NODE *
+builtin_clzll(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, LONGLONG, 1);
+}
+
+static NODE *
+builtin_ctz(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, INT, 0);
+}
+
+static NODE *
+builtin_ctzl(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, LONG, 0);
+}
+
+static NODE *
+builtin_ctzll(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_cxz(f, a, LONGLONG, 0);
+}
+#endif
+
+#ifndef TARGET_FFS
+/*
+ * Find number of beginning 0's in a word of type t.
+ * t should be deunsigned.
+ */
+static NODE *
+builtin_ff(NODE *f, NODE *a, TWORD t)
+{
+	NODE *t101, *t102;
+	NODE *rn, *p;
+	int l15, l16, l17;
+	int sz;
+
+	tfree(f);
+	t = ctype(t);
+	sz = (int)tsize(t, 0, 0)+1;
+
+	t101 = tempnode(0, INT, 0, 0);
+	t102 = tempnode(0, t, 0, 0);
+	l15 = getlab();
+	l16 = getlab();
+	l17 = getlab();
+	rn = buildtree(ASSIGN, ccopy(t101), bcon(0));
+	rn = cmop(rn, buildtree(ASSIGN, ccopy(t102), a));
+
+	p = buildtree(CBRANCH, buildtree(EQ, ccopy(t102), bcon(0)), bcon(l15));
+	rn = cmop(rn, p);
+
+	rn = cmop(rn, buildtree(INCR, ccopy(t101), bcon(1)));
+
+	rn = cmop(rn, lblnod(l16));
+
+	p = buildtree(CBRANCH, buildtree(GE, ccopy(t101), bcon(sz)), bcon(l15));
+	rn = cmop(rn, p);
+
+	p = buildtree(CBRANCH,
+	    buildtree(EQ, buildtree(AND, ccopy(t102), bcon(1)),
+	    bcon(0)), bcon(l17));
+	rn = cmop(rn, p);
+
+	rn = cmop(rn, block(GOTO, bcon(l15), NIL, INT, 0, 0));
+
+	rn = cmop(rn, lblnod(l17));
+	rn = cmop(rn, buildtree(RSEQ, t102, bcon(1)));
+
+	rn = cmop(rn, buildtree(INCR, ccopy(t101), bcon(1)));
+
+	rn = cmop(rn, block(GOTO, bcon(l16), NIL, INT, 0, 0));
+	rn = cmop(rn, lblnod(l15));
+	return cmop(rn, t101);
+}
+
+static NODE *
+builtin_ffs(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_ff(f, a, INT);
+}
+
+static NODE *
+builtin_ffsl(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_ff(f, a, LONG);
+}
+
+static NODE *
+builtin_ffsll(NODE *f, NODE *a, TWORD rt)
+{
+	return builtin_ff(f, a, LONGLONG);
+}
+#endif
+
 /*
  * Get size of object, if possible.
  * Currently does nothing,
@@ -168,7 +305,7 @@ builtin_abs(NODE *f, NODE *a, TWORD rt)
 static NODE *
 builtin_object_size(NODE *f, NODE *a, TWORD rt)
 {
-	int v = icons(a->n_right);
+	CONSZ v = icons(a->n_right);
 	if (v < 0 || v > 3)
 		uerror("arg2 must be between 0 and 3");
 
@@ -285,11 +422,23 @@ builtin_unimp(NODE *f, NODE *a, TWORD rt)
 	return binhelp(f, a, rt, n);
 }
 
+#if 0
 static NODE *
 builtin_unimp_f(NODE *f, NODE *a, TWORD rt)
 {
 	return binhelp(f, a, rt, f->n_sp->sname);
 }
+#endif
+
+#ifndef TARGET_PREFETCH
+static NODE *
+builtin_prefetch(NODE *f, NODE *a, TWORD rt)
+{
+	tfree(f);
+	tfree(a);
+	return bcon(0);
+}
+#endif
 
 #ifndef TARGET_ISMATH
 /*
@@ -301,7 +450,7 @@ builtin_unimp_f(NODE *f, NODE *a, TWORD rt)
 static NODE *
 mtisnan(NODE *p)
 {
-	NODE *q = block(NAME, NIL, NIL, INT, 0, MKAP(INT));
+	NODE *q = block(NAME, NIL, NIL, INT, 0, 0);
 
 	return binhelp(q, cast(ccopy(p), DOUBLE, 0), INT, "isnan");
 }
@@ -393,7 +542,7 @@ builtin_islessgreater(NODE *f, NODE *a, TWORD rt)
  * Math-specific builtins that expands to constants.
  * Versins here is for IEEE FP, vax needs its own versions.
  */
-#ifdef RTOLBYTES
+#if TARGET_ENDIAN == TARGET_LE
 static char vFLOAT[] = { 0, 0, 0x80, 0x7f };
 static char vDOUBLE[] = { 0, 0, 0, 0, 0, 0, 0xf0, 0x7f };
 #ifdef LDBL_128
@@ -431,7 +580,7 @@ static char nLDOUBLE[] = { 0x7f, 0xff, 0xc0, 0, 0, 0, 0, 0, 0, 0 };
 	x = MIN(sizeof(n ## TYP), sizeof(d));			\
 	memcpy(&d, v ## TYP, x);				\
 	nfree(f);						\
-	f = block(FCON, NIL, NIL, TYP, NULL, MKAP(TYP));	\
+	f = block(FCON, NIL, NIL, TYP, NULL, 0);	\
 	f->n_dcon = d;						\
 	return f;						\
 }
@@ -456,7 +605,7 @@ builtin_huge_vall(NODE *f, NODE *a, TWORD rt) VALX(long double,LDOUBLE)
 		x = MIN(sizeof(n ## TYP), sizeof(d));			\
 		memcpy(&d, n ## TYP, x);				\
 		tfree(a); tfree(f);					\
-		f = block(FCON, NIL, NIL, TYP, NULL, MKAP(TYP));	\
+		f = block(FCON, NIL, NIL, TYP, NULL, 0);	\
 		f->n_dcon = d;						\
 		return f;						\
 	}								\
@@ -482,6 +631,9 @@ builtin_nanl(NODE *f, NODE *a, TWORD rt) NANX(long double,LDOUBLE)
 #ifndef TARGET_MEMCPY
 #define	builtin_memcpy builtin_unimp
 #endif
+#ifndef TARGET_MEMPCPY
+#define	builtin_mempcpy builtin_unimp
+#endif
 #ifndef TARGET_MEMSET
 #define	builtin_memset builtin_unimp
 #endif
@@ -506,10 +658,12 @@ static TWORD strcpyt[] = { CHAR|PTR, CHAR|PTR, INT };
 static TWORD strncpyt[] = { CHAR|PTR, CHAR|PTR, SIZET, INT };
 static TWORD strchrt[] = { CHAR|PTR, INT };
 static TWORD strcspnt[] = { CHAR|PTR, CHAR|PTR };
+static TWORD strspnt[] = { CHAR|PTR, CHAR|PTR };
+static TWORD strpbrkt[] = { CHAR|PTR, CHAR|PTR };
 static TWORD nant[] = { CHAR|PTR };
 static TWORD bitt[] = { UNSIGNED };
 static TWORD bitlt[] = { ULONG };
-static TWORD ffst[] = { INT };
+static TWORD bitllt[] = { ULONGLONG };
 
 static const struct bitable {
 	char *name;
@@ -519,6 +673,7 @@ static const struct bitable {
 	TWORD rt;
 } bitable[] = {
 	{ "__builtin___memcpy_chk", builtin_unimp, 4, memcpyt, VOID|PTR },
+	{ "__builtin___mempcpy_chk", builtin_unimp, 4, memcpyt, VOID|PTR },
 	{ "__builtin___memmove_chk", builtin_unimp, 4, memcpyt, VOID|PTR },
 	{ "__builtin___memset_chk", builtin_unimp, 4, memsett, VOID|PTR },
 
@@ -538,16 +693,24 @@ static const struct bitable {
 
 	{ "__builtin_alloca", builtin_alloca, 1, allocat },
 	{ "__builtin_abs", builtin_abs, 1 },
-	{ "__builtin_clz", builtin_unimp_f, 1, bitt, INT },
-	{ "__builtin_ctz", builtin_unimp_f, 1, bitt, INT },
-	{ "__builtin_clzl", builtin_unimp_f, 1, bitlt, INT },
-	{ "__builtin_ctzl", builtin_unimp_f, 1, bitlt, INT },
-	{ "__builtin_ffs", builtin_unimp, 1, ffst, INT },
+	{ "__builtin_clz", builtin_clz, 1, bitt, INT },
+	{ "__builtin_clzl", builtin_clzl, 1, bitlt, INT },
+	{ "__builtin_clzll", builtin_clzll, 1, bitllt, INT },
+	{ "__builtin_ctz", builtin_ctz, 1, bitt, INT },
+	{ "__builtin_ctzl", builtin_ctzl, 1, bitlt, INT },
+	{ "__builtin_ctzll", builtin_ctzll, 1, bitllt, INT },
+	{ "__builtin_ffs", builtin_ffs, 1, bitt, INT },
+	{ "__builtin_ffsl", builtin_ffsl, 1, bitlt, INT },
+	{ "__builtin_ffsll", builtin_ffsll, 1, bitllt, INT },
+	{ "__builtin_popcount", builtin_unimp, 1, bitt, UNSIGNED },
+	{ "__builtin_popcountl", builtin_unimp, 1, bitlt, ULONG },
+	{ "__builtin_popcountll", builtin_unimp, 1, bitllt, ULONGLONG },
 
 	{ "__builtin_constant_p", builtin_constant_p, 1 },
 	{ "__builtin_expect", builtin_expect, 2, expectt },
 	{ "__builtin_memcmp", builtin_memcmp, 3, memcpyt, INT },
 	{ "__builtin_memcpy", builtin_memcpy, 3, memcpyt, VOID|PTR },
+	{ "__builtin_mempcpy", builtin_mempcpy, 3, memcpyt, VOID|PTR },
 	{ "__builtin_memset", builtin_memset, 3, memsett, VOID|PTR },
 	{ "__builtin_huge_valf", builtin_huge_valf, 0 },
 	{ "__builtin_huge_val", builtin_huge_val, 0 },
@@ -565,14 +728,19 @@ static const struct bitable {
 	{ "__builtin_nan", builtin_nan, 1, nant, DOUBLE },
 	{ "__builtin_nanl", builtin_nanl, 1, nant, LDOUBLE },
 	{ "__builtin_object_size", builtin_object_size, 2, memsett, SIZET },
+	{ "__builtin_prefetch", builtin_prefetch, 1, memsett, VOID },
 	{ "__builtin_strcmp", builtin_unimp, 2, strcmpt, INT },
-	{ "__builtin_strcpy", builtin_unimp, 2, strcmpt, CHAR|PTR },
+	{ "__builtin_strcpy", builtin_unimp, 2, strcpyt, CHAR|PTR },
+	{ "__builtin_stpcpy", builtin_unimp, 2, strcpyt, CHAR|PTR },
 	{ "__builtin_strchr", builtin_unimp, 2, strchrt, CHAR|PTR },
 	{ "__builtin_strlen", builtin_unimp, 1, strcmpt, SIZET },
 	{ "__builtin_strrchr", builtin_unimp, 2, strchrt, CHAR|PTR },
 	{ "__builtin_strncpy", builtin_unimp, 3, strncpyt, CHAR|PTR },
 	{ "__builtin_strncat", builtin_unimp, 3, strncpyt, CHAR|PTR },
 	{ "__builtin_strcspn", builtin_unimp, 2, strcspnt, SIZET },
+	{ "__builtin_strspn", builtin_unimp, 2, strspnt, SIZET },
+	{ "__builtin_strstr", builtin_unimp, 2, strcmpt, CHAR|PTR },
+	{ "__builtin_strpbrk", builtin_unimp, 2, strpbrkt, CHAR|PTR },
 #ifndef TARGET_STDARGS
 	{ "__builtin_stdarg_start", builtin_stdarg_start, 2 },
 	{ "__builtin_va_start", builtin_stdarg_start, 2 },
@@ -600,17 +768,17 @@ acnt(NODE *a, int narg, TWORD *tp)
 		if (tp == NULL)
 			continue;
 		q = a->n_right;
-		t = tp[narg-1];
+		t = ctype(tp[narg-1]);
 		if (q->n_type == t)
 			continue;
-		a->n_right = ccast(q, t, 0, NULL, MKAP(BTYPE(t)));
+		a->n_right = ccast(q, t, 0, NULL, 0);
 	}
 
 	/* Last arg is ugly to deal with */
 	if (narg == 1 && tp != NULL) {
 		q = talloc();
 		*q = *a;
-		q = ccast(q, tp[0], 0, NULL, MKAP(BTYPE(tp[0])));
+		q = ccast(q, ctype(tp[0]), 0, NULL, 0);
 		*a = *q;
 		nfree(q);
 	}

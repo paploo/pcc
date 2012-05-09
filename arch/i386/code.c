@@ -1,4 +1,4 @@
-/*	$Id: code.c,v 1.56.2.1 2011/03/01 17:33:24 ragge Exp $	*/
+/*	$Id: code.c,v 1.68 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -29,7 +29,52 @@
 
 # include "pass1.h"
 
-int lastloc = -1;
+/*
+ * Print out assembler segment name.
+ */
+void
+setseg(int seg, char *name)
+{
+	switch (seg) {
+	case PROG: name = ".text"; break;
+	case DATA:
+	case LDATA: name = ".data"; break;
+	case UDATA: break;
+#ifdef MACHOABI
+	case PICLDATA:
+	case PICDATA: name = ".section .data.rel.rw,\"aw\""; break;
+	case PICRDATA: name = ".section .data.rel.ro,\"aw\""; break;
+	case STRNG: name = ".cstring"; break;
+	case RDATA: name = ".const_data"; break;
+#else
+	case PICLDATA: name = ".section .data.rel.local,\"aw\",@progbits";break;
+	case PICDATA: name = ".section .data.rel.rw,\"aw\",@progbits"; break;
+	case PICRDATA: name = ".section .data.rel.ro,\"aw\",@progbits"; break;
+	case STRNG:
+#ifdef AOUTABI
+	case RDATA: name = ".data"; break;
+#else
+	case RDATA: name = ".section .rodata"; break;
+#endif
+#endif
+	case TLSDATA: name = ".section .tdata,\"awT\",@progbits"; break;
+	case TLSUDATA: name = ".section .tbss,\"awT\",@nobits"; break;
+	case CTORS: name = ".section\t.ctors,\"aw\",@progbits"; break;
+	case DTORS: name = ".section\t.dtors,\"aw\",@progbits"; break;
+	case NMSEG: 
+		printf("\t.section %s,\"aw\",@progbits\n", name);
+		return;
+	}
+	printf("\t%s\n", name);
+}
+
+#ifdef MACHOABI
+void
+defalign(int al)
+{
+	printf("\t.align %d\n", ispow2(al/ALCHAR));
+}
+#endif
 
 /*
  * Define everything needed to print out some data (or text).
@@ -38,97 +83,25 @@ int lastloc = -1;
 void
 defloc(struct symtab *sp)
 {
-	extern char *nextsect;
-	struct attr *ap;
-	int weak = 0;
-	char *name = NULL;
-#if defined(ELFABI) || defined(PECOFFABI)
-	static char *loctbl[] = { "text", "data", "section .rodata" };
-#elif defined(MACHOABI)
-	static char *loctbl[] = { "text", "data", "const_data" };
-#endif
-	TWORD t;
-	int s, al;
+	char *name;
 
-	if (sp == NULL) {
-		lastloc = -1;
-		return;
-	}
-	t = sp->stype;
-	s = ISFTN(t) ? PROG : ISCON(cqual(t, sp->squal)) ? RDATA : DATA;
 	if ((name = sp->soname) == NULL)
 		name = exname(sp->sname);
-#ifdef TLS
-	if (sp->sflags & STLS) {
-		if (s != DATA)
-			cerror("non-data symbol in tls section");
-		nextsect = ".tdata";
-	}
-#endif
-#ifdef GCC_COMPAT
-	{
-		if ((ap = attr_find(sp->sap, GCC_ATYP_SECTION)) != NULL)
-			nextsect = ap->sarg(0);
-		if (attr_find(sp->sap, GCC_ATYP_WEAK) != NULL)
-			weak = 1;
-		if (attr_find(sp->sap, GCC_ATYP_DESTRUCTOR)) {
-			printf("\t.section\t.dtors,\"aw\",@progbits\n");
-			printf("\t.align 4\n\t.long\t%s\n", name);
-			lastloc = -1;
-		}
-		if (attr_find(sp->sap, GCC_ATYP_CONSTRUCTOR)) {
-			printf("\t.section\t.ctors,\"aw\",@progbits\n");
-			printf("\t.align 4\n\t.long\t%s\n", name);
-			lastloc = -1;
-		}
-		if ((ap = attr_find(sp->sap, GCC_ATYP_VISIBILITY)) &&
-		    strcmp(ap->sarg(0), "default"))
-			printf("\t.%s %s\n", ap->sarg(0), name);
-	}
-#endif
-#ifdef ELFABI
-	if (kflag && !ISFTN(t)) {
-		/* Must place aggregates with pointers in relocatable memory */
-		TWORD t2 = t;
-
-		while (ISARY(t2))
-			t2 = DECREF(t2);
-		if (t2 > LDOUBLE) {
-			/* put in reloc memory */
-			printf("\t.section .data.rel.local,\"aw\",@progbits\n");
-			s = lastloc = -1;
-		}
-	}
-#endif
-	if (nextsect) {
-		printf("	.section %s,\"wa\",@progbits\n", nextsect);
-		nextsect = NULL;
-		s = -1;
-	} else if (s != lastloc)
-		printf("	.%s\n", loctbl[s]);
-	lastloc = s;
-	while (ISARY(t))
-		t = DECREF(t);
-	al = ISFTN(t) ? ALINT : talign(t, sp->sap);
-	if (al > ALCHAR)
-		printf("	.align %d\n", al/ALCHAR);
-	if (weak)
-		printf("	.weak %s\n", name);
-	else if (sp->sclass == EXTDEF) {
+	if (sp->sclass == EXTDEF) {
 		printf("	.globl %s\n", name);
 #if defined(ELFABI)
 		printf("\t.type %s,@%s\n", name,
-		    ISFTN(t)? "function" : "object");
+		    ISFTN(sp->stype)? "function" : "object");
 #endif
 	}
 #if defined(ELFABI)
-	if (!ISFTN(t)) {
+	if (!ISFTN(sp->stype)) {
 		if (sp->slevel == 0)
 			printf("\t.size %s,%d\n", name,
-			    (int)tsize(t, sp->sdf, sp->sap)/SZCHAR);
+			    (int)tsize(sp->stype, sp->sdf, sp->sap)/SZCHAR);
 		else
 			printf("\t.size " LABFMT ",%d\n", sp->soffset,
-			    (int)tsize(t, sp->sdf, sp->sap)/SZCHAR);
+			    (int)tsize(sp->stype, sp->sdf, sp->sap)/SZCHAR);
 	}
 #endif
 	if (sp->slevel == 0)
@@ -142,7 +115,7 @@ defloc(struct symtab *sp)
  * deals with struct return here
  */
 void
-efcode()
+efcode(void)
 {
 	extern int gotnr;
 	NODE *p, *q;
@@ -156,17 +129,17 @@ efcode()
 	if (sz == SZCHAR || sz == SZSHORT || sz == SZINT || sz == SZLONGLONG) {
 		/* Pointer to struct in eax */
 		if (sz == SZLONGLONG) {
-			q = block(OREG, NIL, NIL, INT, 0, MKAP(INT));
+			q = block(OREG, NIL, NIL, INT, 0, 0);
 			q->n_lval = 4;
-			p = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+			p = block(REG, NIL, NIL, INT, 0, 0);
 			p->n_rval = EDX;
 			ecomp(buildtree(ASSIGN, p, q));
 		}
 		if (sz < SZSHORT) sz = CHAR;
 		else if (sz > SZSHORT) sz = INT;
 		else sz = SHORT;
-		q = block(OREG, NIL, NIL, sz, 0, MKAP(sz));
-		p = block(REG, NIL, NIL, sz, 0, MKAP(sz));
+		q = block(OREG, NIL, NIL, sz, 0, 0);
+		p = block(REG, NIL, NIL, sz, 0, 0);
 		ecomp(buildtree(ASSIGN, p, q));
 		return;
 	}
@@ -182,10 +155,10 @@ efcode()
 	ecomp(p);
 
 	/* put hidden arg in eax on return */
-	q = block(OREG, NIL, NIL, INT, 0, MKAP(INT));
+	q = block(OREG, NIL, NIL, INT, 0, 0);
 	regno(q) = FPREG;
 	q->n_lval = 8;
-	p = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+	p = block(REG, NIL, NIL, INT, 0, 0);
 	regno(p) = EAX;
 	ecomp(buildtree(ASSIGN, p, q));
 }
@@ -260,11 +233,11 @@ bfcode(struct symtab **sp, int cnt)
 #endif
 
 		/* Generate extended assembler for PIC prolog */
-		p = tempnode(0, INT, 0, MKAP(INT));
+		p = tempnode(0, INT, 0, 0);
 		gotnr = regno(p);
-		p = block(XARG, p, NIL, INT, 0, MKAP(INT));
+		p = block(XARG, p, NIL, INT, 0, 0);
 		p->n_name = "=g";
-		p = block(XASM, p, bcon(0), INT, 0, MKAP(INT));
+		p = block(XASM, p, bcon(0), INT, 0, 0);
 
 #if defined(MACHOABI)
 		if ((name = cftnsp->soname) == NULL)
@@ -303,15 +276,6 @@ bfcode(struct symtab **sp, int cnt)
 }
 
 
-/*
- * by now, the automatics and register variables are allocated
- */
-void
-bccode()
-{
-	SETOFF(autooff, SZINT);
-}
-
 #if defined(MACHOABI)
 struct stub stublist;
 struct stub nlplist;
@@ -320,7 +284,7 @@ struct stub nlplist;
 /* called just before final exit */
 /* flag is 1 if errors, 0 if none */
 void
-ejobcode(int flag )
+ejobcode(int flag)
 {
 #if defined(MACHOABI)
 	/*
@@ -347,15 +311,16 @@ ejobcode(int flag )
 	}
 #endif
 
-#define _MKSTR(x) #x
-#define MKSTR(x) _MKSTR(x)
-#define OS MKSTR(TARGOS)
-        printf("\t.ident \"PCC: %s (%s)\"\n", PACKAGE_STRING, OS);
+	printf("\t.ident \"PCC: %s\"\n", VERSSTR);
 }
 
 void
-bjobcode()
+bjobcode(void)
 {
+#ifdef os_sunos
+	astypnames[SHORT] = astypnames[USHORT] = "\t.2byte";
+#endif
+	astypnames[INT] = astypnames[UNSIGNED] = "\t.long";
 #if defined(MACHOABI)
 	DLIST_INIT(&stublist, link);
 	DLIST_INIT(&nlplist, link);
@@ -391,28 +356,18 @@ funcode(NODE *p)
 		return p;
 #if defined(ELFABI)
 	/* Create an ASSIGN node for ebx */
-	l = block(REG, NIL, NIL, INT, 0, MKAP(INT));
+	l = block(REG, NIL, NIL, INT, 0, 0);
 	l->n_rval = EBX;
-	l = buildtree(ASSIGN, l, tempnode(gotnr, INT, 0, MKAP(INT)));
+	l = buildtree(ASSIGN, l, tempnode(gotnr, INT, 0, 0));
 	if (p->n_right->n_op != CM) {
-		p->n_right = block(CM, l, p->n_right, INT, 0, MKAP(INT));
+		p->n_right = block(CM, l, p->n_right, INT, 0, 0);
 	} else {
 		for (r = p->n_right; r->n_left->n_op == CM; r = r->n_left)
 			;
-		r->n_left = block(CM, l, r->n_left, INT, 0, MKAP(INT));
+		r->n_left = block(CM, l, r->n_left, INT, 0, 0);
 	}
 #endif
 	return p;
-}
-
-/*
- * return the alignment of field of type t
- */
-int
-fldal(unsigned int t)
-{
-	uerror("illegal field type");
-	return(ALINT);
 }
 
 /* fix up type of field p */

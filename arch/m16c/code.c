@@ -1,4 +1,4 @@
-/*	$Id: code.c,v 1.20 2008/07/29 13:25:58 ragge Exp $	*/
+/*	$Id: code.c,v 1.24 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -66,7 +66,7 @@ defnam(struct symtab *p)
  * deals with struct return here
  */
 void
-efcode()
+efcode(void)
 {
 	NODE *p, *q;
 	int sz;
@@ -76,16 +76,16 @@ efcode()
 	/* address of return struct is in eax */
 	/* create a call to memcpy() */
 	/* will get the result in eax */
-	p = block(REG, NIL, NIL, CHAR+PTR, 0, MKSUE(CHAR+PTR));
+	p = block(REG, NIL, NIL, CHAR+PTR, 0, 0);
 	p->n_rval = R0;
-	q = block(OREG, NIL, NIL, CHAR+PTR, 0, MKSUE(CHAR+PTR));
+	q = block(OREG, NIL, NIL, CHAR+PTR, 0, 0);
 	q->n_rval = FB;
 	q->n_lval = 8; /* return buffer offset */
-	p = block(CM, q, p, INT, 0, MKSUE(INT));
+	p = block(CM, q, p, INT, 0, 0);
 	sz = (tsize(STRTY, cftnsp->sdf, cftnsp->ssue)+SZCHAR-1)/SZCHAR;
-	p = block(CM, p, bcon(sz), INT, 0, MKSUE(INT));
+	p = block(CM, p, bcon(sz), INT, 0, 0);
 	p->n_right->n_name = "";
-	p = block(CALL, bcon(0), p, CHAR+PTR, 0, MKSUE(CHAR+PTR));
+	p = block(CALL, bcon(0), p, CHAR+PTR, 0, 0);
 	p->n_left->n_name = "memcpy";
 	send_passt(IP_NODE, p);
 }
@@ -230,14 +230,6 @@ addsym(struct symtab *q)
 	sympole = w;
 }
 
-/*
- * by now, the automatics and register variables are allocated
- */
-void
-bccode()
-{
-}
-
 struct caps {
 	char *cap, *stat;
 } caps[] = {
@@ -251,11 +243,12 @@ struct caps {
 	{ "__variable_data", "near" },
 	{ NULL, NULL },
 };
+
 /*
  * Called before parsing begins.
  */
 void
-bjobcode()
+bjobcode(void)
 {
 	struct caps *c;
 
@@ -268,7 +261,7 @@ bjobcode()
 /* called just before final exit */
 /* flag is 1 if errors, 0 if none */
 void
-ejobcode(int flag )
+ejobcode(int flag)
 {
 	struct symlst *w = sympole;
 
@@ -313,16 +306,6 @@ bycode(int t, int i)
 			putchar(t);
 		}
 	}
-}
-
-/*
- * return the alignment of field of type t
- */
-int
-fldal(unsigned int t)
-{
-	uerror("illegal field type");
-	return(ALINT);
 }
 
 /* fix up type of field p */

@@ -1,4 +1,4 @@
-/*	$Id: code.c,v 1.49 2011/01/29 14:55:33 ragge Exp $	*/
+/*	$Id: code.c,v 1.64 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2008 Michael Shalayeff
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
@@ -52,7 +52,6 @@ static const int argregsi[] = { RDI, RSI, RDX, RCX, R08, R09 };
 #define	VAOFA(x)	(x-SZINT-SZINT)
 #define	VARSA(x)	(x-SZINT-SZINT-SZPOINT(0))
 
-int lastloc = -1;
 static int stroffset;
 
 static int varneeds;
@@ -68,67 +67,55 @@ static NODE *movtoreg(NODE *p, int rno);
 void varattrib(char *name, struct attr *sap);
 
 /*
+ * Print out assembler segment name.
+ */
+void
+setseg(int seg, char *name)
+{
+	switch (seg) {
+	case PROG: name = ".text"; break;
+	case DATA:
+	case LDATA: name = ".data"; break;
+	case STRNG:
+	case RDATA: name = ".section .rodata"; break;
+	case UDATA: break;
+#ifdef MACHOABI
+	case PICLDATA:
+	case PICDATA: name = ".section .data.rel.rw,\"aw\""; break;
+	case PICRDATA: name = ".section .data.rel.ro,\"aw\""; break;
+#else
+	case PICLDATA:
+	case PICDATA: name = ".section .data.rel.rw,\"aw\",@progbits"; break;
+	case PICRDATA: name = ".section .data.rel.ro,\"aw\",@progbits"; break;
+#endif
+	case TLSDATA: name = ".section .tdata,\"awT\",@progbits"; break;
+	case TLSUDATA: name = ".section .tbss,\"awT\",@nobits"; break;
+	case CTORS: name = ".section\t.ctors,\"aw\",@progbits"; break;
+	case DTORS: name = ".section\t.dtors,\"aw\",@progbits"; break;
+	case NMSEG: 
+		printf("\t.section %s,\"aw\",@progbits\n", name);
+		return;
+	}
+	printf("\t%s\n", name);
+}
+
+/*
  * Define everything needed to print out some data (or text).
  * This means segment, alignment, visibility, etc.
  */
 void
 defloc(struct symtab *sp)
 {
-	extern char *nextsect;
-	static char *loctbl[] = { "text", "data", "section .rodata" };
-	extern int tbss;
 	char *name;
-	TWORD t;
-	int s;
 
-	if (sp == NULL) {
-		lastloc = -1;
-		return;
-	}
-	if (kflag) {
-#ifdef MACHOABI
-		loctbl[DATA] = "section .data.rel.rw,\"aw\"";
-		loctbl[RDATA] = "section .data.rel.ro,\"aw\"";
-#else
-		loctbl[DATA] = "section .data.rel.rw,\"aw\",@progbits";
-		loctbl[RDATA] = "section .data.rel.ro,\"aw\",@progbits";
-#endif
-	}
-	t = sp->stype;
-	s = ISFTN(t) ? PROG : ISCON(cqual(t, sp->squal)) ? RDATA : DATA;
 	if ((name = sp->soname) == NULL)
 		name = exname(sp->sname);
 
-	if (sp->sflags & STLS) {
-		if (s != DATA)
-			cerror("non-data symbol in tls section");
-		if (tbss)
-			nextsect = ".tbss,\"awT\",@nobits";
-		else
-			nextsect = ".tdata,\"awT\",@progbits";
-		tbss = 0;
-		lastloc = -1;
-	}
-
-	varattrib(name, sp->sap);
-
-	if (nextsect) {
-		printf("	.section %s\n", nextsect);
-		nextsect = NULL;
-		s = -1;
-	} else if (s != lastloc)
-		printf("	.%s\n", loctbl[s]);
-	lastloc = s;
-	while (ISARY(t))
-		t = DECREF(t);
-	s = ISFTN(t) ? ALINT : talign(t, sp->sap);
-	if (s > ALCHAR)
-		printf("	.align %d\n", s/ALCHAR);
 	if (sp->sclass == EXTDEF) {
 		printf("\t.globl %s\n", name);
 #ifndef MACHOABI
 		printf("\t.type %s,@%s\n", name,
-		    ISFTN(t)? "function" : "object");
+		    ISFTN(sp->stype)? "function" : "object");
 #endif
 	}
 	if (sp->slevel == 0)
@@ -138,44 +125,12 @@ defloc(struct symtab *sp)
 }
 
 /*
- * Print out variable attributes.
- */
-void
-varattrib(char *name, struct attr *sap)
-{
-	extern char *nextsect;
-	struct attr *ga;
-
-	if ((ga = attr_find(sap, GCC_ATYP_SECTION)) != NULL)
-		nextsect = ga->sarg(0);
-	if ((ga = attr_find(sap, GCC_ATYP_WEAK)) != NULL)
-		printf("	.weak %s\n", name);
-	if (attr_find(sap, GCC_ATYP_DESTRUCTOR)) {
-		printf("\t.section\t.dtors,\"aw\",@progbits\n");
-		printf("\t.align 8\n\t.quad\t%s\n", name);
-		lastloc = -1;
-	}
-	if (attr_find(sap, GCC_ATYP_CONSTRUCTOR)) {
-		printf("\t.section\t.ctors,\"aw\",@progbits\n");
-		printf("\t.align 8\n\t.quad\t%s\n", name);
-		lastloc = -1;
-	}
-	if ((ga = attr_find(sap, GCC_ATYP_VISIBILITY)) &&
-	    strcmp(ga->sarg(0), "default"))
-		printf("\t.%s %s\n", ga->sarg(0), name);
-	if ((ga = attr_find(sap, GCC_ATYP_ALIASWEAK))) {
-		printf("	.weak %s\n", ga->sarg(0));
-		printf("	.set %s,%s\n", ga->sarg(0), name);
-	}
-}
-
-/*
  * code for the end of a function
  * deals with struct return here
  * The return value is in (or pointed to by) RETREG.
  */
 void
-efcode()
+efcode(void)
 {
 	struct symtab *sp;
 	extern int gotnr;
@@ -190,6 +145,7 @@ efcode()
 		return;
 
 	/* XXX should have one routine for this */
+	ngpr = nsse = 0;
 	if ((typ = argtyp(t, sp->sdf, sp->sap)) == STRREG || typ == STRCPX) {
 		/* Cast to long pointer and move to the registers */
 		/* XXX can overrun struct size */
@@ -206,12 +162,12 @@ efcode()
 			rno = RAX;
 		}
 		if (ssz > SZLONG) {
-			p = block(REG, NIL, NIL, INCREF(t), 0, MKAP(t));
+			p = block(REG, NIL, NIL, INCREF(t), 0, 0);
 			regno(p) = RAX;
 			p = buildtree(UMUL, buildtree(PLUS, p, bcon(1)), NIL);
 			ecomp(movtoreg(p, rno+1));
 		}
-		p = block(REG, NIL, NIL, INCREF(t), 0, MKAP(t));
+		p = block(REG, NIL, NIL, INCREF(t), 0, 0);
 		regno(p) = RAX;
 		p = buildtree(UMUL, p, NIL);
 		ecomp(movtoreg(p, rno));
@@ -222,9 +178,9 @@ efcode()
 		l = tempnode(stroffset, INCREF(t), sp->sdf, sp->sap);
 		l = buildtree(UMUL, l, NIL);
 		ecomp(buildtree(ASSIGN, l, r));
-		l = block(REG, NIL, NIL, LONG, 0, MKAP(LONG));
+		l = block(REG, NIL, NIL, LONG, 0, 0);
 		regno(l) = RAX;
-		r = tempnode(stroffset, LONG, 0, MKAP(LONG));
+		r = tempnode(stroffset, LONG, 0, 0);
 		ecomp(buildtree(ASSIGN, l, r));
 	} else
 		cerror("efcode");
@@ -250,7 +206,7 @@ bfcode(struct symtab **s, int cnt)
 	if (cftnsp->stype == STRTY+FTN || cftnsp->stype == UNIONTY+FTN) {
 		sp = cftnsp;
 		if (argtyp(DECREF(sp->stype), sp->sdf, sp->sap) == STRMEM) {
-			r = block(REG, NIL, NIL, LONG, 0, MKAP(LONG));
+			r = block(REG, NIL, NIL, LONG, 0, 0);
 			regno(r) = argregsi[ngpr++];
 			p = tempnode(0, r->n_type, r->n_df, r->n_ap);
 			stroffset = regno(p);
@@ -326,12 +282,12 @@ bfcode(struct symtab **s, int cnt)
 				t = LONG;
 				rno = argregsi[ngpr++];
 			}
-			r = block(REG, NIL, NIL, t, 0, MKAP(t));
+			r = block(REG, NIL, NIL, t, 0, 0);
 			regno(r) = rno;
 			ecomp(movtomem(r, -autooff, FPREG));
 
 			if (tsize(sp->stype, sp->sdf, sp->sap) > SZLONG) {
-				r = block(REG, NIL, NIL, t, 0, MKAP(t));
+				r = block(REG, NIL, NIL, t, 0, 0);
 				regno(r) = (typ == STRCPX ?
 				    XMM0 + nsse++ : argregsi[ngpr++]);
 				ecomp(movtomem(r, -autooff+SZLONG, FPREG));
@@ -354,11 +310,13 @@ bfcode(struct symtab **s, int cnt)
 		t = al->type;
 		if (t == TNULL)
 			return;
-		if (BTYPE(t) == STRTY || BTYPE(t) == UNIONTY)
+		if (ISSOU(BTYPE(t)))
 			al++;
-		for (; t > BTMASK; t = DECREF(t))
+		for (i = 0; t > BTMASK; t = DECREF(t))
 			if (ISARY(t) || ISFTN(t))
-				al++;
+				i++;
+		if (i)
+			al++;
 	}
 
 	/* fix stack offset */
@@ -367,16 +325,16 @@ bfcode(struct symtab **s, int cnt)
 	/* Save reg arguments in the reg save area */
 	p = NIL;
 	for (i = ngpr; i < 6; i++) {
-		r = block(REG, NIL, NIL, LONG, 0, MKAP(LONG));
+		r = block(REG, NIL, NIL, LONG, 0, 0);
 		regno(r) = argregsi[i];
 		r = movtomem(r, -RSALONGOFF(i)-autooff, FPREG);
-		p = (p == NIL ? r : block(COMOP, p, r, INT, 0, MKAP(INT)));
+		p = (p == NIL ? r : block(COMOP, p, r, INT, 0, 0));
 	}
 	for (i = nsse; i < 8; i++) {
-		r = block(REG, NIL, NIL, DOUBLE, 0, MKAP(DOUBLE));
+		r = block(REG, NIL, NIL, DOUBLE, 0, 0);
 		regno(r) = i + XMM0;
 		r = movtomem(r, -RSADBLOFF(i)-autooff, FPREG);
-		p = (p == NIL ? r : block(COMOP, p, r, INT, 0, MKAP(INT)));
+		p = (p == NIL ? r : block(COMOP, p, r, INT, 0, 0));
 	}
 	autooff += RSASZ;
 	rsaoff = autooff;
@@ -388,24 +346,15 @@ bfcode(struct symtab **s, int cnt)
 }
 
 
-/*
- * by now, the automatics and register variables are allocated
- */
-void
-bccode()
-{
-	SETOFF(autooff, SZINT);
-}
-
 /* called just before final exit */
 /* flag is 1 if errors, 0 if none */
 void
-ejobcode(int flag )
+ejobcode(int flag)
 {
 	if (flag)
 		return;
 
-#ifdef MACHOAPI
+#ifdef MACHOABI
 #define PT(x)
 #else
 #define	PT(x) printf(".type __pcc_" x ",@function\n")
@@ -461,13 +410,10 @@ ejobcode(int flag )
 	}
 		
 
-#define _MKSTR(x) #x
-#define MKSTR(x) _MKSTR(x)
-#define OS MKSTR(TARGOS)
 #ifdef MACHOABI
-	printf("\t.ident \"PCC: %s (%s)\"\n", PACKAGE_STRING, OS);
+	printf("\t.ident \"PCC: %s\"\n", VERSSTR);
 #else
-        printf("\t.ident \"PCC: %s (%s)\"\n\t.end\n", PACKAGE_STRING, OS);
+	printf("\t.ident \"PCC: %s\"\n\t.end\n", VERSSTR);
 #endif
 }
 
@@ -495,12 +441,16 @@ static char *gp_offset, *fp_offset, *overflow_arg_area, *reg_save_area;
 static char *gpnext, *fpnext, *_1regref, *_2regref, *memref;
 
 void
-bjobcode()
+bjobcode(void)
 {
 	struct symtab *sp;
 	struct rstack *rp;
 	NODE *p, *q;
 	char *c;
+
+	/* amd64 names for some asm constant printouts */
+	astypnames[INT] = astypnames[UNSIGNED] = "\t.long";
+	astypnames[LONG] = astypnames[ULONG] = "\t.quad";
 
 	gp_offset = addname("gp_offset");
 	fp_offset = addname("fp_offset");
@@ -508,17 +458,17 @@ bjobcode()
 	reg_save_area = addname("reg_save_area");
 
 	rp = bstruct(NULL, STNAME, NULL);
-	p = block(NAME, NIL, NIL, UNSIGNED, 0, MKAP(UNSIGNED));
+	p = block(NAME, NIL, NIL, UNSIGNED, 0, 0);
 	soumemb(p, gp_offset, 0);
 	soumemb(p, fp_offset, 0);
 	p->n_type = VOID+PTR;
-	p->n_ap = MKAP(VOID);
+	p->n_ap = NULL;
 	soumemb(p, overflow_arg_area, 0);
 	soumemb(p, reg_save_area, 0);
 	nfree(p);
 	q = dclstruct(rp);
 	c = addname("__builtin_va_list");
-	p = block(LB, bdty(NAME, c), bcon(1), INT, 0, MKAP(INT));
+	p = block(LB, bdty(NAME, c), bcon(1), INT, 0, 0);
 	p = tymerge(q, p);
 	p->n_sp = lookup(c, 0);
 	defid(p, TYPEDEF);
@@ -542,7 +492,7 @@ mkstkref(int off, TWORD typ)
 {
 	NODE *p;
 
-	p = block(REG, NIL, NIL, PTR|typ, 0, MKAP(LONG));
+	p = block(REG, NIL, NIL, PTR|typ, 0, 0);
 	regno(p) = FPREG;
 	return buildtree(PLUS, p, bcon(off/SZCHAR));
 }
@@ -706,7 +656,7 @@ argtyp(TWORD t, union dimfun *df, struct attr *ap)
 
 		if (sz <= 2*SZLONG && attr_find(ap, ATTR_COMPLEX) != NULL) {
 			cl = nsse < 7 ? STRCPX : STRMEM;
-		} else if (sz > 2*SZLONG || ((sz+SZLONG)/SZLONG)+ngpr > 6 ||
+		} else if (sz > 2*SZLONG || ((sz+SZLONG-1)/SZLONG)+ngpr > 6 ||
 		    attr_find(ap, GCC_ATYP_PACKED) != NULL)
 			cl = STRMEM;
 		else
@@ -788,16 +738,21 @@ argput(NODE *p)
 		} else if (ssz <= SZLONG*2) {
 			NODE *ql, *qr;
 
-			qr = cast(ccopy(p->n_left), INCREF(ty), 0);
-			qr = movtoreg(buildtree(UMUL, qr, NIL), r);
+			if (!ISPTR(p->n_left->n_type))
+				cerror("no struct arg pointer");
+			p = nfree(p);
+			p = makety(p, PTR|ty, 0, 0, 0);
+			qr = ccopy(ql = tempnode(0, PTR|ty, 0, 0));
+			p = buildtree(ASSIGN, ql, p);
 
-			ql = cast(p->n_left, INCREF(ty), 0);
-			ql = buildtree(UMUL, buildtree(PLUS, ql, bcon(1)), NIL);
+			ql = movtoreg(buildtree(UMUL, ccopy(qr), NIL), r);
+			p = buildtree(COMOP, p, ql);
+
+			ql = buildtree(UMUL, buildtree(PLUS, qr, bcon(1)), NIL);
 			r = (typ == STRCPX ? XMM0 + nsse++ : argregsi[ngpr++]);
 			ql = movtoreg(ql, r);
 
-			nfree(p);
-			p = buildtree(CM, ql, qr);
+			p = buildtree(COMOP, p, ql);
 		} else
 			cerror("STRREG");
 		break;
@@ -900,6 +855,7 @@ funcode(NODE *p)
 {
 	NODE *l, *r;
 	TWORD t;
+	int i;
 
 	nsse = ngpr = nrsp = 0;
 	/* Check if hidden arg needed */
@@ -927,34 +883,26 @@ funcode(NODE *p)
 		for (; al->type != TELLIPSIS; al++) {
 			if ((t = al->type) == TNULL)
 				return p; /* No need */
-			if (BTYPE(t) == STRTY || BTYPE(t) == UNIONTY)
+			if (ISSOU(BTYPE(t)))
 				al++;
-			for (; t > BTMASK; t = DECREF(t))
+			for (i = 0; t > BTMASK; t = DECREF(t))
 				if (ISARY(t) || ISFTN(t))
-					al++;
+					i++;
+			if (i)
+				al++;
 		}
 	}
 
 	/* Always emit number of SSE regs used */
 	l = movtoreg(bcon(nsse), RAX);
 	if (p->n_right->n_op != CM) {
-		p->n_right = block(CM, l, p->n_right, INT, 0, MKAP(INT));
+		p->n_right = block(CM, l, p->n_right, INT, 0, 0);
 	} else {
 		for (r = p->n_right; r->n_left->n_op == CM; r = r->n_left)
 			;
-		r->n_left = block(CM, l, r->n_left, INT, 0, MKAP(INT));
+		r->n_left = block(CM, l, r->n_left, INT, 0, 0);
 	}
 	return p;
-}
-
-/*
- * return the alignment of field of type t
- */
-int
-fldal(unsigned int t)
-{
-	uerror("illegal field type");
-	return(ALINT);
 }
 
 /* fix up type of field p */

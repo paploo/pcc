@@ -1,4 +1,4 @@
-/*	$Id: pass1.h,v 1.215 2011/02/17 13:44:13 ragge Exp $	*/
+/*	$Id: pass1.h,v 1.239 2012/04/22 12:49:07 ragge Exp $	*/
 /*
  * Copyright(C) Caldera International Inc. 2001-2002. All rights reserved.
  *
@@ -49,8 +49,6 @@ typedef unsigned int bittype; /* XXX - for basicblock */
 #endif
 #include "manifest.h"
 
-#include "ccconfig.h"
-
 /*
  * Storage classes
  */
@@ -90,8 +88,8 @@ extern	char *scnames(int);
 #define	NSTYPES		05
 #define	SMASK		07
 
-/* #define SSET		00010 */
-/* #define SREF		00020 */
+#define	STLS		00010	/* Thread Local Support variable */
+#define SINSYS		00020	/* Declared in system header */
 #define SNOCREAT	00040	/* don't create a symbol in lookup() */
 #define STEMP		00100	/* Allocate symtab from temp or perm mem */
 #define	SDYNARRAY	00200	/* symbol is dynamic array on stack */
@@ -155,15 +153,7 @@ struct	symtab {
 	struct	attr *sap;	/* the base type attribute list */
 };
 
-struct attr2 {
-	struct attr *next;
-	int atype;
-	union aarg aa[2];
-};
-
 #define	ISSOU(ty)   ((ty) == STRTY || (ty) == UNIONTY)
-#define	MKAP(type)  ((struct attr *)&btattr[type])
-extern const struct attr2 btattr[];
 
 /*
  * External definitions
@@ -178,9 +168,8 @@ int mygenswitch(int, TWORD, struct swents **, int);
 extern	int blevel;
 extern	int instruct, got_type;
 extern	int oldstyle;
-extern	int oflag;
 
-extern	int lineno, nerrors;
+extern	int lineno, nerrors, issyshdr;
 
 extern	char *ftitle;
 extern	struct symtab *cftnsp;
@@ -191,15 +180,18 @@ extern	OFFSZ inoff;
 
 extern	int reached;
 extern	int isinlining;
-extern	int xinline;
-
-extern	int sdebug, idebug, pdebug;
+extern	int xinline, xgnu89, xgnu99;
+extern	int bdebug, ddebug, edebug, idebug, ndebug;
+extern	int odebug, pdebug, sdebug, tdebug, xdebug;
 
 /* various labels */
 extern	int brklab;
 extern	int contlab;
 extern	int flostat;
 extern	int retlab;
+extern	int doing_init, statinit;
+extern	short sztable[];
+extern	char *astypnames[];
 
 /* pragma globals */
 extern int pragma_allpacked, pragma_packed, pragma_aligned;
@@ -212,6 +204,31 @@ extern char *pragma_renamed;
 #define FCONT		04
 #define FDEF		010
 #define FLOOP		020
+
+/*
+ * Location counters
+ */
+#define NOSEG		-1
+#define PROG		0		/* (ro) program segment */
+#define DATA		1		/* (rw) data segment */
+#define RDATA		2		/* (ro) data segment */
+#define LDATA		3		/* (rw) local data */
+#define UDATA		4		/* (rw) uninitialized data */
+#define STRNG		5		/* (ro) string segment */
+#define PICDATA		6		/* (rw) relocatable data segment */
+#define PICRDATA	7		/* (ro) relocatable data segment */
+#define PICLDATA	8		/* (rw) local relocatable data */
+#define TLSDATA		9		/* (rw) TLS data segment */
+#define TLSUDATA	10		/* (rw) TLS uninitialized segment */
+#define CTORS		11		/* constructor */
+#define DTORS		12		/* destructor */
+#define	NMSEG		13		/* other (named) segment */
+
+extern int lastloc, nextloc;
+void locctr(int type, struct symtab *sp);
+void setseg(int type, char *name);
+void defalign(int al);
+void symdirec(struct symtab *sp);
 
 /*	mark an offset which is undefined */
 
@@ -226,7 +243,9 @@ extern	NODE
 	*strend(int gtype, char *),
 	*tymerge(NODE *, NODE *),
 	*stref(NODE *),
+#ifdef WORD_ADDRESSED
 	*offcon(OFFSZ, TWORD, union dimfun *, struct attr *),
+#endif
 	*bcon(int),
 	*xbcon(CONSZ, struct symtab *, TWORD),
 	*bpsize(NODE *),
@@ -234,7 +253,6 @@ extern	NODE
 	*pconvert(NODE *),
 	*oconvert(NODE *),
 	*ptmatch(NODE *),
-	*tymatch(NODE *),
 	*makety(NODE *, TWORD, TWORD, union dimfun *, struct attr *),
 	*block(int, NODE *, NODE *, TWORD, union dimfun *, struct attr *),
 	*doszof(NODE *),
@@ -288,7 +306,8 @@ void extdec(struct symtab *);
 void defzero(struct symtab *);
 int falloc(struct symtab *, int, NODE *);
 TWORD ctype(TWORD);  
-void ninval(CONSZ, int, NODE *);
+void inval(CONSZ, int, NODE *);
+int ninval(CONSZ, int, NODE *);
 void infld(CONSZ, int, CONSZ);
 void zbits(CONSZ, int);
 void instring(struct symtab *);
@@ -302,7 +321,7 @@ char *tmpsprintf(char *, ...);
 char *tmpvsprintf(char *, va_list);
 void asginit(NODE *);
 void desinit(NODE *);
-void endinit(void);
+void endinit(int);
 void endictx(void);
 void sspinit(void);
 void sspstart(void);
@@ -353,15 +372,12 @@ int ispow2(CONSZ);
 void defid(NODE *q, int class);
 void efcode(void);
 void ecomp(NODE *p);
-void cendarg(void);
-int fldal(unsigned int);
 int upoff(int size, int alignment, int *poff);
 void nidcl(NODE *p, int class);
 void eprint(NODE *, int, int *, int *);
 int uclass(int class);
 int notlval(NODE *);
 void ecode(NODE *p);
-void bccode(void);
 void ftnend(void);
 void dclargs(void);
 int suemeq(struct attr *s1, struct attr *s2);
@@ -369,8 +385,17 @@ struct symtab *strmemb(struct attr *ap);
 int yylex(void);
 void yyerror(char *);
 int pragmas_gcc(char *t);
-
+NODE *cstknode(TWORD t, union dimfun *df, struct attr *ap);
+int concast(NODE *p, TWORD t);
 NODE *builtin_check(NODE *f, NODE *a);
+#ifdef WORD_ADDRESSED
+#define rmpconv(p) (p)
+#else
+NODE *rmpconv(NODE *);
+#endif
+NODE *optloop(NODE *);
+NODE *nlabel(int label);
+
 
 #ifdef SOFTFLOAT
 typedef struct softfloat SF;
@@ -424,7 +449,7 @@ enum {	ATTR_NONE,
 
 	/* PCC used attributes */
 	ATTR_COMPLEX,	/* Internal definition of complex */
-	ATTR_BASETYP,	/* Internal; see below */
+	xxxATTR_BASETYP,	/* Internal; see below */
 	ATTR_QUALTYP,	/* Internal; const/volatile, see below */
 	ATTR_STRUCT,	/* Internal; element list */
 #define	ATTR_MAX ATTR_STRUCT
@@ -469,6 +494,7 @@ enum {	ATTR_NONE,
 	GCC_ATYP_ALW_INL,
 	GCC_ATYP_TLSMODEL,
 	GCC_ATYP_ALIASWEAK,
+	GCC_ATYP_RETURNS_TWICE,
 
 	/* other stuff */
 	GCC_ATYP_BOUNDED,	/* OpenBSD extra boundary checks */
@@ -479,22 +505,27 @@ enum {	ATTR_NONE,
 
 
 /*
+#ifdef notdef
  * ATTR_BASETYP has the following layout:
  * aa[0].iarg has size
  * aa[1].iarg has alignment
+#endif
  * ATTR_QUALTYP has the following layout:
  * aa[0].iarg has CON/VOL + FUN/ARY/PTR
  * Not defined yet...
  * aa[3].iarg is dimension for arrays (XXX future)
  * aa[3].varg is function defs for functions.
  */
+#ifdef notdef
 #define	atypsz	aa[0].iarg
 #define	aalign	aa[1].iarg
+#endif
 
 /*
  * ATTR_STRUCT member list.
  */
 #define amlist  aa[0].varg
+#define amsize  aa[1].iarg
 #define	strattr(x)	(attr_find(x, ATTR_STRUCT))
 
 #define	iarg(x)	aa[x].iarg
@@ -544,6 +575,9 @@ void stabs_struct(struct symtab *, struct attr *);
 #error int size unknown
 #endif
 
+/* Generate a bitmask from a given type size */
+#define SZMASK(y) ((((1LL << ((y)-1))-1) << 1) | 1)
+
 /*
  * C compiler first pass extra defines.
  */
@@ -585,13 +619,14 @@ void stabs_struct(struct symtab *, struct attr *);
 #define XREAL		(MAXOP+31)
 #define XIMAG		(MAXOP+32)
 #define TYMERGE		(MAXOP+33)
+#define LABEL		(MAXOP+34)
 
 
 /*
  * The following types are only used in pass1.
  */
 #define SIGNED		(MAXTYPES+1)
-#define BOOL		(MAXTYPES+2)
+#define FARG		(MAXTYPES+2)
 #define	FIMAG		(MAXTYPES+3)
 #define	IMAG		(MAXTYPES+4)
 #define	LIMAG		(MAXTYPES+5)

@@ -1,4 +1,4 @@
-/*	$Id: code.c,v 1.3 2009/02/08 16:41:35 ragge Exp $	*/
+/*	$Id: code.c,v 1.6 2012/04/22 21:07:40 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -71,7 +71,7 @@ defloc(struct symtab *sp)
  * deals with struct return here
  */
 void
-efcode()
+efcode(void)
 {
 	NODE *p, *q;
 
@@ -123,24 +123,15 @@ bfcode(struct symtab **sp, int cnt)
 }
 
 
-/*
- * by now, the automatics and register variables are allocated
- */
-void
-bccode()
-{
-	SETOFF(autooff, SZINT);
-}
-
 /* called just before final exit */
 /* flag is 1 if errors, 0 if none */
 void
-ejobcode(int flag )
+ejobcode(int flag)
 {
 }
 
 void
-bjobcode()
+bjobcode(void)
 {
 }
 
@@ -169,16 +160,6 @@ funcode(NODE *p)
 		r->n_type = l->n_type;
 	}
 	return p;
-}
-
-/*
- * return the alignment of field of type t
- */
-int
-fldal(unsigned int t)
-{
-	uerror("illegal field type");
-	return(ALINT);
 }
 
 /* fix up type of field p */

@@ -1,5 +1,5 @@
 %{
-/*	$Id: scan.l,v 1.102 2011/02/16 18:50:42 ragge Exp $	*/
+/*	$Id: scan.l,v 1.111 2012/04/22 21:07:41 plunky Exp $	*/
 
 /*
  * Copyright (c) 2002 Anders Magnusson. All rights reserved.
@@ -53,7 +53,7 @@ static NODE *charcon(void);
 static NODE *wcharcon(void);
 static void control(int);
 static void pragma(void);
-int notype, parbal, inattr, parlvl;
+int notype, parbal, inattr, parlvl, nodinit, inoso;
 static int resw(TWORD, int);
 
 #define	CPP_IDENT 	2
@@ -134,8 +134,19 @@ extern void yyset_lineno (int);
 
 			yylval.strp = addname(yytext);
 #ifdef GCC_COMPAT
-			if ((i = gcc_keyword(yylval.strp, &yylval.nodep)) > 0)
+			if (doing_init && nodinit == 0) {
+				/* check for name: for old gcc compat */
+				while ((i = input()) == ' ' || i == '\t')
+					;
+				if (i == ':')
+					return(GCC_DESIG);
+				unput(i);
+			}
+			if ((i = gcc_keyword(yylval.strp, &yylval.nodep)) > 0) {
+				if (i == PCC_OFFSETOF)
+					inoso = 1;
 				return i;
+			}
 #endif
 			if (i == 0) {
 				if (notype)
@@ -186,11 +197,12 @@ L?\"(\\.|[^\\"])*\"	{ yylval.strp = yytext; return C_STRING; }
 ";"			{ notype = 0; return(';'); }
 ("{"|"<%")		{ notype = 0; return('{'); }
 ("}"|"%>")		{ if (rpole) notype = 1; return('}'); }
-","			{ if (parbal) notype = 0; return(','); }
-":"			{ return(':'); }
+","			{ if (parbal && !inoso) notype = 0; return(','); }
+":"			{ if (doing_init) nodinit--; return(':'); }
 "="			{ return('='); }
 "("			{ parbal++; notype = 0; return('('); }
 ")"			{	parbal--;
+				inoso = 0;
 				if (parbal==0) { notype = 0; }
 				if (inattr && parlvl == parbal)
 					inattr = 0;
@@ -210,7 +222,7 @@ L?\"(\\.|[^\\"])*\"	{ yylval.strp = yytext; return C_STRING; }
 ">"			{ yylval.intval = GT; return(C_RELOP); }
 "^"			{ return('^'); }
 "|"			{ return('|'); }
-"?"			{ return('?'); }
+"?"			{ if (doing_init) nodinit++; return('?'); }
 ^#pragma[ \t].*		{ pragma(); }
 ^#ident[ \t].*		{ control(CPP_IDENT); }
 ^#line[ \t].*		{ control(CPP_LINE); }
@@ -222,7 +234,7 @@ L?\"(\\.|[^\\"])*\"	{ yylval.strp = yytext; return C_STRING; }
 
 %%
 
-int lineno;
+int lineno, issyshdr;
 char *ftitle = "<stdin>";
 
 int
@@ -251,7 +263,7 @@ resw(TWORD t, int rv)
 		return rv;
 
 	case C_TYPE:
-		yylval.nodep = mkty(t, 0, MKAP(t));
+		yylval.nodep = mkty(t, 0, 0);
 		notype=1;
 		return(rv);
 
@@ -313,7 +325,7 @@ f2(char *str)
 	dc = strtod(str, &eptr); /* XXX - avoid strtod() */
 #endif
 	dc = typround(dc, eptr, &tw);
-	p = block(FCON, NIL, NIL, tw, 0, MKAP(tw));
+	p = block(FCON, NIL, NIL, tw, 0, 0);
 	p->n_dcon = dc;
 	return p;
 }
@@ -376,7 +388,7 @@ fhexcon(char *c)
 	while (ed < 0)
 		d /= 2, ed++;
 	d = typround(d, ep, &tw);
-	p = block(FCON, NIL, NIL, tw, 0, MKAP(tw));
+	p = block(FCON, NIL, NIL, tw, 0, 0);
 	p->n_dcon = d;
 	return p;
 }
@@ -451,7 +463,7 @@ NODE *
 cvtdig(int radix)
 {
 	NODE *p;
-	TWORD ntype;
+	TWORD otype, ntype;
 	unsigned long long v;
 	char *ch = yytext;
 	int n, numl, numu;
@@ -485,19 +497,48 @@ cvtdig(int radix)
 	if (*ch)
 		uerror("constant has too many '%c'", *ch);
 
-	if (ntype == INT) {
-		/* v contains a number. Get type correct */
-		if (v > MAX_LONGLONG && radix != 10)
+	otype = ntype;
+	switch (ntype) {
+	case INT:
+	case LONG:
+	case LONGLONG:
+		if (radix == 10) {
+			if (otype == LONGLONG)
+				break;
+			if (v > MAX_LONG) { 
+				ntype = LONGLONG;
+				if (otype == LONG)
+					break;
+			} else if (v > MAX_INT)
+				ntype = LONG;
+		} else {
+			if (v > MAX_LONGLONG) {
+				ntype = ULONGLONG;
+				if (otype == LONGLONG)
+					break;
+			} else if (v > MAX_ULONG) {
+				ntype = LONGLONG;
+			} else if (v > MAX_LONG) {
+				ntype = ULONG;
+				if (otype == LONG)
+					break;
+			} else if (v > MAX_UNSIGNED) {
+				ntype = LONG;
+			} else if (v > MAX_INT)
+				ntype = UNSIGNED;
+		}
+		break;
+	case UNSIGNED:
+	case ULONG:
+		if (v > MAX_ULONG) {
 			ntype = ULONGLONG;
-		else if (v > MAX_ULONG)
-			ntype = LONGLONG;
-		else if (v > MAX_LONG && radix != 10)
+			if (otype == ULONG)
+				break;
+		} else if (v > MAX_UNSIGNED)
 			ntype = ULONG;
-		else if (v > MAX_UNSIGNED)
-			ntype = LONG;
-		else if (v > MAX_INT && radix != 10)
-			ntype = UNSIGNED;
-	}
+		break;	
+	}	
+
 	ntype = ctype(ntype);
 	p = xbcon(v, NULL, ntype);
 	ASGLVAL(p->n_slval, v);
@@ -558,9 +599,9 @@ wcharcon(void)
 	}
 
 	if (i == 0)
-		uerror("empty wide character constant");
+		uerror("empty wide-character constant");
 	if (i > 1)
-		werror("too many characters in wide character constant");
+		werror("too many characters in wide-character constant");
 	return xbcon(lastcon, NULL, ctype(UNSIGNED));
 }
 
@@ -596,8 +637,13 @@ control(int t)
 			wr++;
 		if (*wr != '\"')
 			goto bad;
-		*wr = 0;
+		*wr++ = 0;
 		ftitle = addstring(eptr);
+		while (*wr == ' ')
+			wr++;
+		issyshdr = 0;
+		if (*wr == '3')
+			issyshdr = 1;
 #ifdef STABS
 		if (gflag)
 			stabs_file(ftitle);
@@ -741,11 +787,12 @@ struct pragmas {
 	{ "ident", NULL },
 	{ 0 },
 };
+
 /*
  * got a full pragma line.  Split it up here.
  */
 static void
-pragma()
+pragma(void)
 {
 	struct pragmas *p;
 	char *t, *pt;

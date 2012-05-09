@@ -1,4 +1,4 @@
-/*	$Id: local2.c,v 1.41 2011/02/18 16:52:37 ragge Exp $	*/
+/*	$Id: local2.c,v 1.49 2011/09/21 21:23:09 plunky Exp $	*/
 /*
  * Copyright (c) 2008 Michael Shalayeff
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
@@ -42,6 +42,7 @@ deflab(int label)
 static int regoff[MAXREGS];
 static TWORD ftype;
 char *rbyte[], *rshort[], *rlong[];
+static int needframe;
 
 /*
  * Print out the prolog assembler.
@@ -52,7 +53,6 @@ prtprolog(struct interpass_prolog *ipp, int addto)
 {
 	int i;
 
-	/* XXX should look if there is any need to emit this */
 	printf("\tpushq %%rbp\n");
 	printf("\tmovq %%rsp,%%rbp\n");
 	addto = (addto+15) & ~15; /* 16-byte aligned */
@@ -85,12 +85,56 @@ offcalc(struct interpass_prolog *ipp)
 	return addto;
 }
 
+/*
+ * Traverse a tree to check if we need to emit a frame at all.
+ * We emit it if:
+ * - any function call
+ * - rsp or rbp referenced
+ * Return 1 if frame is needed, 0 otherwise.
+ */
+static int
+chkf(NODE *p)
+{
+	int o = p->n_op;
+
+	if ((o == REG || o == OREG) && (regno(p) == RBP || regno(p) == RSP))
+		return 1;
+	if (callop(o))
+		return 1;
+	if (optype(o) == UTYPE)
+		return chkf(p->n_left);
+	else if (optype(o) == BITYPE)
+		return chkf(p->n_left) || chkf(p->n_right);
+	return 0;
+}
+
+static int
+chkframe(struct interpass_prolog *ipp)
+{
+	struct interpass *ip;
+
+	DLIST_FOREACH(ip, &ipp->ipp_ip, qelem) {
+		if (ip->type == IP_EPILOG)
+			break;
+		if (ip->type == IP_NODE) {
+			if (chkf(ip->ip_node))
+				return 1;
+		}
+	}
+	return 0;
+}
+
 void
 prologue(struct interpass_prolog *ipp)
 {
 	int addto;
 
 	ftype = ipp->ipp_type;
+
+	if (xdeljumps)
+		needframe = chkframe(ipp);
+	else
+		needframe = 1;
 
 #ifdef LANG_F77
 	if (ipp->ipp_vis)
@@ -103,7 +147,10 @@ prologue(struct interpass_prolog *ipp)
 	 * add to the stack.
 	 */
 	addto = offcalc(ipp);
-	prtprolog(ipp, addto);
+	if (addto)
+		needframe = 1;
+	if (needframe)
+		prtprolog(ipp, addto);
 }
 
 void
@@ -114,21 +161,25 @@ eoftn(struct interpass_prolog *ipp)
 	if (ipp->ipp_ip.ip_lbl == 0)
 		return; /* no code needs to be generated */
 
-	/* return from function code */
-	for (i = 0; i < MAXREGS; i++)
-		if (TESTBIT(ipp->ipp_regs, i))
-			fprintf(stdout, "	movq -%d(%s),%s\n",
-			    regoff[i], rnames[FPREG], rnames[i]);
+	if (needframe) {
+		/* return from function code */
+		for (i = 0; i < MAXREGS; i++)
+			if (TESTBIT(ipp->ipp_regs, i))
+				fprintf(stdout, "	movq -%d(%s),%s\n",
+				    regoff[i], rnames[FPREG], rnames[i]);
 
-	/* struct return needs special treatment */
-	if (ftype == STRTY || ftype == UNIONTY) {
-		printf("	movl 8(%%ebp),%%eax\n");
-		printf("	leave\n");
-		printf("	ret $%d\n", 4);
-	} else {
-		printf("	leave\n");
-		printf("	ret\n");
-	}
+		/* struct return needs special treatment */
+		if (ftype == STRTY || ftype == UNIONTY) {
+			printf("	movl 8(%%ebp),%%eax\n");
+			printf("	leave\n");
+			printf("	ret $%d\n", 4);
+		} else {
+			printf("	leave\n");
+			printf("	ret\n");
+		}
+	} else
+		printf("\tret\n");
+
 #ifndef MACHOABI
 	printf("\t.size %s,.-%s\n", ipp->ipp_name, ipp->ipp_name);
 #endif
@@ -212,75 +263,17 @@ fcomp(NODE *p)
 	if (p->n_left->n_op != REG)
 		comperr("bad compare %p\n", p);
 	if ((p->n_su & DORIGHT) == 0)
-		expand(p, 0, "	fxch\n");
-	expand(p, 0, "	fucomip %st(1),%st\n");	/* emit compare insn  */
-	expand(p, 0, "	fstp %st(0)\n");	/* pop fromstack */
+		expand(p, 0, "\tfxch\n");
+	expand(p, 0, "\tfucomip %st(1),%st\n");	/* emit compare insn  */
+	expand(p, 0, "\tfstp %st(0)\n");	/* pop fromstack */
 	zzzcode(p, 'U');
 }
 
 int
 fldexpand(NODE *p, int cookie, char **cp)
 {
-	CONSZ val;
-
-	if (p->n_op == ASSIGN)
-		p = p->n_left;
-	switch (**cp) {
-	case 'S':
-		printf("%d", UPKFSZ(p->n_rval));
-		break;
-	case 'H':
-		printf("%d", UPKFOFF(p->n_rval));
-		break;
-	case 'M':
-	case 'N':
-		val = (((((CONSZ)1 << (UPKFSZ(p->n_rval)-1))-1)<<1)|1);
-		val <<= UPKFOFF(p->n_rval);
-		if (p->n_type > UNSIGNED)
-			printf("0x%llx", (**cp == 'M' ? val : ~val));
-		else
-			printf("0x%llx", (**cp == 'M' ? val : ~val)&0xffffffff);
-		break;
-	default:
-		comperr("fldexpand");
-	}
-	return 1;
-}
-
-static void
-bfext(NODE *p)
-{
-	int ch = 0, sz = 0;
-
-	if (ISUNSIGNED(p->n_right->n_type))
-		return;
-	switch (p->n_right->n_type) {
-	case CHAR:
-		ch = 'b';
-		sz = 8;
-		break;
-	case SHORT:
-		ch = 'w';
-		sz = 16;
-		break;
-	case INT:
-		ch = 'l';
-		sz = 32;
-		break;
-	case LONG:
-		ch = 'q';
-		sz = 64;
-		break;
-	default:
-		comperr("bfext");
-	}
-
-	sz -= UPKFSZ(p->n_left->n_rval);
-	printf("\tshl%c $%d,", ch, sz);
-	adrput(stdout, getlr(p, 'D'));
-	printf("\n\tsar%c $%d,", ch, sz);
-	adrput(stdout, getlr(p, 'D'));
-	printf("\n");
+	comperr("fldexpand");
+	return 0;
 }
 
 static void
@@ -289,7 +282,7 @@ stasg(NODE *p)
 	expand(p, INAREG, "	leaq AL,%rdi\n");
 	if (p->n_stsize >= 8)
 		printf("\tmovl $%d,%%ecx\n\trep movsq\n", p->n_stsize >> 3);
-	if (p->n_stsize & 3)
+	if (p->n_stsize & 4)
 		printf("\tmovsl\n");
 	if (p->n_stsize & 2)
 		printf("\tmovsw\n");
@@ -420,10 +413,13 @@ zzzcode(NODE *p, int c)
 			return; /* XXX remove ZC from UCALL */
 		if (pr)
 			printf("	addq $%d, %s\n", pr, rnames[RSP]);
-		break;
-
-	case 'E': /* Perform bitfield sign-extension */
-		bfext(p);
+		if ((p->n_op == STCALL || p->n_op == USTCALL) &&
+		    p->n_stsize <= 16) {
+			/* store reg-passed structs on stack */
+			printf("\tmovq %%rax,-%d(%%rbp)\n", stkpos);
+			printf("\tmovq %%rdx,-%d(%%rbp)\n", stkpos-8);
+			printf("\tleaq -%d(%%rbp),%%rax\n", stkpos);
+		}
 		break;
 
 	case 'F': /* Structure argument */
@@ -456,7 +452,8 @@ zzzcode(NODE *p, int c)
 		break;
 
 	case 'P': /* Put hidden argument in rdi */
-		printf("\tleaq -%d(%%rbp),%%rdi\n", stkpos);
+		if (p->n_stsize > 16)
+			printf("\tleaq -%d(%%rbp),%%rdi\n", stkpos);
 		break;
 
         case 'Q': /* emit struct assign */
@@ -512,13 +509,6 @@ zzzcode(NODE *p, int c)
 	}
 }
 
-/*ARGSUSED*/
-int
-rewfld(NODE *p)
-{
-	return(1);
-}
-
 int canaddr(NODE *);
 int
 canaddr(NODE *p)
@@ -537,13 +527,8 @@ canaddr(NODE *p)
 int
 flshape(NODE *p)
 {
-	int o = p->n_op;
-
-	if (o == OREG || o == REG || o == NAME)
-		return SRDIR; /* Direct match */
-	if (o == UMUL && shumul(p->n_left, SOREG))
-		return SROREG; /* Convert into oreg */
-	return SRREG; /* put it into a register */
+	comperr("flshape");
+	return(0);
 }
 
 /* INTEMP shapes must not contain any temporary registers */
@@ -651,9 +636,6 @@ adrput(FILE *io, NODE *p)
 	char **rc;
 	/* output an address, with offsets, from p */
 
-	if (p->n_op == FLD)
-		p = p->n_left;
-
 	switch (p->n_op) {
 
 	case NAME:
@@ -683,18 +665,6 @@ adrput(FILE *io, NODE *p)
 			fprintf(io, "(%s)", rnames[p->n_rval]);
 		return;
 	case ICON:
-#ifdef PCC_DEBUG
-		/* Sanitycheck for PIC, to catch adressable constants */
-		if (kflag && p->n_name[0]) {
-			static int foo;
-
-			if (foo++ == 0) {
-				printf("\nfailing...\n");
-				fwalk(p, e2print, 0);
-				comperr("pass2 conput");
-			}
-		}
-#endif
 		/* addressable value of the constant */
 		fputc('$', io);
 		conput(io, p);
@@ -1027,6 +997,8 @@ retry:	switch (c) {
 	case 'c': reg = RCX; break;
 	case 'd': reg = RDX; break;
 
+	case 'Q': reg = RDX; break; /* Always dx for now */
+
 	case 'x':
 	case 'q':
 	case 't':
@@ -1043,8 +1015,13 @@ retry:	switch (c) {
 	case 'M':
 	case 'N':
 		if (p->n_left->n_op != ICON) {
-			if ((c = XASMVAL1(cw)))
+			if ((c = XASMVAL1(cw))) {
+				if (c == 'r') {
+					p->n_name++;
+					return 0;
+				}
 				goto retry;
+			}
 			uerror("xasm arg not constant");
 		}
 		v = p->n_left->n_lval;
@@ -1112,6 +1089,11 @@ targarg(char *w, void *arg, int n)
 	if (q->n_op == REG) {
 		if (*w == 'k') {
 			q->n_type = INT;
+		} else if (*w == 'h' || *w == 'b') {
+			/* Can do this only because we know dx is used */
+			printf("%%d%c", *w == 'h' ? 'h' : 'l');
+			tfree(q);
+			return;
 		} else if (*w != 'w') {
 			cerror("targarg"); /* XXX ??? */
 			if (q->n_type > UCHAR) {

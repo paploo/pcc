@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT([pcc], [1.0.0.RELEASE], <pcc-list@ludd.ltu.se>)
+AC_INIT([pcc], [1.1.0.DEVEL], <pcc-list@ludd.ltu.se>)
 AC_CONFIG_HEADER([config.h])
 
 AC_CANONICAL_TARGET
@@ -12,6 +12,10 @@ endian=little
 targosver=0
 tls=no
 gcccompat=yes
+pccdebug=yes
+native=no
+useyasm=no
+stabs=no
 # allowed: UNSIGNED (4-char u_int), INT (4-char int), SHORT (2-char u_short)
 wchar_type=INT
 
@@ -20,6 +24,7 @@ case "$target_os" in
     apple)
 	targos=apple
 	abi=classic68k
+	stabs=yes
 	case "$target_cpu" in
 	    m68k) targmach=m68k endian=big ;;
 	esac
@@ -35,6 +40,7 @@ case "$target_os" in
     darwin*)
 	targos=darwin
 	abi=macho
+	stabs=yes
 	case "$target_os" in
 	    *10.*) targosver=10 ;;
 	    *9.*) targosver=9 ;;
@@ -51,6 +57,7 @@ case "$target_os" in
     dragonfly*)
 	targos=dragonfly
 	abi=elf
+	stabs=yes
 	tls=yes
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
@@ -61,7 +68,9 @@ case "$target_os" in
     freebsd*)
 	targos=freebsd
 	abi=elf
+	stabs=yes
 	case "$target_os" in
+	    *10.*) targosver=10 ;;
 	    *9.*) targosver=9 ;;
 	    *8.*) targosver=8 ;;
 	    *7.*) targosver=7 ;;
@@ -78,6 +87,7 @@ case "$target_os" in
     linux*)
 	targos=linux
 	abi=elf
+	stabs=yes
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
 	    powerpc*) targmach=powerpc endian=big ;;
@@ -90,6 +100,7 @@ case "$target_os" in
     midnightbsd*)
 	targos=midnightbsd
 	abi=elf
+	stabs=yes
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
 	    sparc64) targmach=sparc64 endian=big ;;
@@ -105,17 +116,26 @@ case "$target_os" in
 	altlibdir="c:/mingw/lib"
 	;;
 
-    minix)
-	targos=minix
-	abi=coff
+    minix*)
+ 	targos=minix
+	stabs=yes
+	case "$target_os" in
+	    # explicit setting
+	    minixaout|minix2|*aout) abi=aout ;;
+	    minixelf|minix3|*elf) abi=elf ;;
+	    # default to ELF
+	    *) abi=elf ;;
+	esac
 	case "$target_cpu" in
-	    m68k) targmach=m68k endian=big ;;
+	    i86) targmach=i86 ;;
+	    i?86) targmach=i386 ;;
 	esac
 	;;
 
     mirbsd*)
 	targos=mirbsd
 	abi=elf
+	stabs=yes
 	wchar_type=USHORT
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
@@ -125,7 +145,10 @@ case "$target_os" in
     netbsd*)
 	targos=netbsd
 	abi=elf
+	stabs=yes
 	case "$target_os" in
+	    *7.*) targosver=7 ;;
+	    *6.*) targosver=6 ;;
 	    *5.*) targosver=5 ;;
 	    *4.*) targosver=4 ;;
 	    *3.*) targosver=3 ;;
@@ -150,6 +173,7 @@ case "$target_os" in
     nextstep*)
 	targos=nextstep
 	abi=macho
+	stabs=yes
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
 	    sparc) targmach=sparc endian=big ;;
@@ -160,6 +184,7 @@ case "$target_os" in
     openbsd*)
 	targos=openbsd
 	abi=elf
+	stabs=yes
 	case "$target_cpu" in
 	    i?86) targmach=i386 ;;
 	    vax) targmach=vax ;;
@@ -172,6 +197,7 @@ case "$target_os" in
     sunos*|solaris*)
         targos=sunos
         abi=elf
+	stabs=yes
         case "$target_cpu" in
             i?86) targmach=i386 ;;
             sparc*) targmach=sparc64 endian=big ;;
@@ -207,7 +233,7 @@ case "$host_os" in
 		prefix="c:/pcc"
 		assembler="yasm.exe -p gnu -f win32"
 		linker="link.exe /nologo"
-		ADD_CFLAGS=-DMSLINKER
+		ADD_CPPFLAGS="$ADD_CPPFLAGS -DMSLINKER"
 	fi
 	;;
 
@@ -216,6 +242,7 @@ case "$host_os" in
 	;;
 
     darwin*)
+	echo $targosver
 	if test "$targosver" -ge 10 ; then
 		targmach=amd64
 	fi
@@ -240,6 +267,10 @@ case "$abi" in
 	pecoff)		AC_DEFINE(PECOFFABI, [], [Using PE/COFF ABI]) ;;
 	classic68k)	AC_DEFINE(CLASSIC68K, [], [Using Classic 68k ABI]) ;;
 esac
+
+if test "$stabs" = "yes"; then
+	AC_DEFINE(STABS, 1, [Enable STABS debugging output])
+fi
 
 # Specify alternate assembler, linker, include and lib paths
 AC_ARG_WITH(incdir,
@@ -276,9 +307,28 @@ AC_ARG_ENABLE(gcc-compat,
 if test "$gcccompat" = "yes"; then
 	ADD_CPPFLAGS="$ADD_CPPFLAGS -DGCC_COMPAT";
 fi
+AC_ARG_ENABLE(pcc-debug,
+	AC_HELP_STRING([--disable-pcc-debug],
+		[Disable PCC debugging]),
+	[pccdebug=$enableval], [])
+if test "$pccdebug" = "yes"; then
+	ADD_CPPFLAGS="$ADD_CPPFLAGS -DPCC_DEBUG";
+fi
+AC_ARG_WITH(yasm,
+	AC_HELP_STRING([--use-yasm], [Use yasm assembler]),
+	useyasm=$withval,
+	[])
+if test "$useyasm" = "yes"; then
+	assembler="yasm"
+	ADD_CPPFLAGS="$ADD_CPPFLAGS -DUSE_YASM"
+fi
+AC_ARG_ENABLE(native,
+	AC_HELP_STRING([--enable-native],
+		[Build the compiler as a native rather than cross-build compiler]),
+	[native=$enableval], [])
 
 # setup for building a cross-compiler
-if test "X$target_alias" = "X$host_alias" -o "X$target_alias" = "X"; then
+if test "X$native" = "Xyes" -o "X$target_alias" = "X$host_alias" -o "X$target_alias" = "X"; then
 	BINPREFIX=""
 else
 	BINPREFIX="${target_alias}-"
@@ -318,11 +368,11 @@ if test -n "$linker"; then
 		[Define path to alternate linker])
 fi
 if test -n "$preprocessor"; then
-	AC_DEFINE_UNQUOTED(PREPROCESSOR, "${BINPREFIX}cpp",
+	AC_DEFINE_UNQUOTED(PREPROCESSOR, "$preprocessor",
 		[Define path to alternate preprocessor])
 fi
 if test -n "$compiler"; then
-	AC_DEFINE_UNQUOTED(COMPILER, "${BINPREFIX}ccom",
+	AC_DEFINE_UNQUOTED(COMPILER, "$compiler",
 		[Define path to alternate compiler])
 fi
 
@@ -333,7 +383,7 @@ UNSIGNED|INT) wchar_size=4 ;;
 esac
 
 AC_DEFINE_UNQUOTED(WCHAR_TYPE, $wchar_type, [Type to use for wide characters])
-AC_DEFINE_UNQUOTED(WCHAR_SIZE, $wchar_size, [Size of wide character type in chars])
+AC_DEFINE_UNQUOTED(WCHAR_SIZE, $wchar_size, [Size of wide-character type in chars])
 
 # check for additional compiler flags
 AC_PROG_CC
@@ -439,10 +489,8 @@ AC_SUBST(ADD_CPPFLAGS)
 pcc_major=`echo $PACKAGE_VERSION | awk -F. '{print $1}'`
 pcc_minor=`echo $PACKAGE_VERSION | awk -F. '{print $2}'`
 pcc_minorminor=`echo $PACKAGE_VERSION | awk -F. '{print $3}'`
-versstr="\"$PACKAGE_STRING `cat $srcdir/DATESTAMP` for $target, $USER@`hostname`\""
+versstr="\"$PACKAGE_STRING `cat $srcdir/DATESTAMP` for $target\""
 
-AC_DEFINE_UNQUOTED(TARGOS, $targos, [Target OS])
-AC_DEFINE_UNQUOTED(TARGOSVER, $targosver, [Target OS version])
 AC_DEFINE_UNQUOTED(PCC_MAJOR, $pcc_major, [Major version no])
 AC_DEFINE_UNQUOTED(PCC_MINOR, $pcc_minor, [Minor version no])
 AC_DEFINE_UNQUOTED(PCC_MINORMINOR, $pcc_minorminor, [Minor minor version no])
@@ -453,6 +501,8 @@ AC_CONFIG_FILES([Makefile
 		cc/cc/Makefile
 		cc/cpp/Makefile
 		cc/ccom/Makefile
+		cc/cxxcom/Makefile
+		cc/driver/Makefile
 		f77/Makefile
 		f77/f77/Makefile
 		f77/fcom/Makefile
@@ -476,6 +526,7 @@ echo "Using include path ............... ${altincdir-<default>}"
 echo "Using library path ............... ${altlibdir-<default>}"
 echo "Has TLS support .................. $tls"
 echo "Has GCC compatibility ............ $gcccompat"
+echo "Has PCC debugging ................ $pccdebug"
 echo "Type of wchar_t is ............... ${wchar_type} (${wchar_size} chars)"
 echo
 echo "Configure finished.  Do 'make && make install' to compile and install.

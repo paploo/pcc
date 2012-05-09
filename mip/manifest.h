@@ -1,4 +1,4 @@
-/*	$Id: manifest.h,v 1.92 2011/01/22 22:08:54 ragge Exp $	*/
+/*	$Id: manifest.h,v 1.99 2012/03/22 18:51:41 plunky Exp $	*/
 /*
  * Copyright(C) Caldera International Inc. 2001-2002. All rights reserved.
  *
@@ -61,7 +61,7 @@
  * Signed types must have bit 0 unset, unsigned types set (used below).
  */
 #define	UNDEF		0	/* free symbol table entry */
-#define	FARG		1 	/* function argument */
+#define	BOOL		1 	/* function argument */
 #define	CHAR		2
 #define	UCHAR		3
 #define	SHORT		4
@@ -114,9 +114,9 @@
 #define	ISLONGLONG(x)	((x) == LONGLONG || (x) == ULONGLONG)
 #define ISUNSIGNED(x)	(((x) <= ULONGLONG) && (((x) & 1) == (UNSIGNED & 1)))
 #define UNSIGNABLE(x)	(((x)<=ULONGLONG&&(x)>=CHAR) && !ISUNSIGNED(x))
-#define ENUNSIGN(x)	((x)|1)
-#define DEUNSIGN(x)	((x)&~1)
-#define ISINTEGER(x)	(((x) >= CHAR && (x) <= ULONGLONG) || (x) == BOOL)
+#define ENUNSIGN(x)	enunsign(x)
+#define DEUNSIGN(x)	deunsign(x)
+#define ISINTEGER(x)	((x) >= BOOL && (x) <= ULONGLONG)
 #define ISPTR(x)	(((x)&TMASK)==PTR)
 #define ISFTN(x)	(((x)&TMASK)==FTN)	/* is x a function type? */
 #define ISARY(x)	(((x)&TMASK)==ARY)	/* is x an array type? */
@@ -130,6 +130,12 @@
 		/* advance x to a multiple of y */
 #define NOFIT(x,y,z)	(((x)%(z) + (y)) > (z))
 		/* can y bits be added to x without overflowing z */
+
+/* Endianness.	Target is expected to TARGET_ENDIAN to one of these  */
+#define TARGET_LE	1
+#define TARGET_BE	2
+#define TARGET_PDP	3
+#define TARGET_ANY	4
 
 #ifndef SPECIAL_INTEGERS
 #define	ASGLVAL(lval, val)
@@ -161,28 +167,15 @@
 
 #define SPFLG	040000
 
-/*
- * Location counters
- */
-#define PROG		0		/* (ro) program segment */
-#define DATA		1		/* (rw) data segment */
-#define RDATA		2		/* (ro) data segment */
-#define STRNG		3		/* (ro) string segment */
-#define	UDATA		4		/* (rw) uninitialized data */
-
-
 #define	regno(p)	((p)->n_rval)	/* register number */
 
 /*
  * 
  */
-extern int bdebug, tdebug, edebug;
-extern int ddebug, xdebug, f2debug;
-extern int iTflag, oTflag, kflag;
-extern int sflag, nflag, gflag, pflag;
-extern int funsigned_char;
+extern int gflag, kflag, pflag;
 extern int sspflag;
-extern int xssaflag, xtailcallflag, xtemps, xdeljumps, xdce;
+extern int xssa, xtailcall, xtemps, xdeljumps, xdce;
+extern int xuchar;
 
 int yyparse(void);
 void yyaccpt(void);
@@ -376,5 +369,6 @@ extern	int warniserr;		/* treat warnings as errors */
 
 void warner(int type, ...);
 void Wflags(char *str);
-
+TWORD deunsign(TWORD t);
+TWORD enunsign(TWORD t);
 #endif

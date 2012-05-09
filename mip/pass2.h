@@ -1,4 +1,4 @@
-/*	$Id: pass2.h,v 1.128 2011/01/11 12:48:23 ragge Exp $	*/
+/*	$Id: pass2.h,v 1.131 2012/03/22 18:51:41 plunky Exp $	*/
 /*
  * Copyright(C) Caldera International Inc. 2001-2002. All rights reserved.
  *
@@ -226,6 +226,7 @@ struct rspecial {
 };
 
 struct p2env;
+#define	NRESC 4
 extern	NODE resc[];
 extern	int p2autooff, p2maxautooff;
 
@@ -307,6 +308,8 @@ int notoff(TWORD, int, CONSZ, char *);
 int fldexpand(NODE *, int, char **);
 void p2tree(NODE *p); 
 int flshape(NODE *p);
+int ncnt(int needs);
+
 
 extern	char *rnames[];
 extern	int rstatus[];
@@ -344,10 +347,10 @@ int offset(NODE *p, int);
 
 extern	int lineno;
 extern	int fldshf, fldsz;
-extern	int lflag, x2debug, udebug, e2debug, odebug;
-extern	int rdebug, t2debug, s2debug, b2debug, c2debug;
-extern	int g2debug;
-extern	int kflag;
+extern	int ndebug;
+extern	int b2debug, c2debug, e2debug, f2debug, g2debug, o2debug;
+extern	int r2debug, s2debug, t2debug, u2debug, x2debug;
+
 #ifdef FORT
 extern	int Oflag;
 #endif

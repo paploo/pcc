@@ -1,4 +1,4 @@
-/*	$Id: common.c,v 1.93 2011/01/22 22:08:23 ragge Exp $	*/
+/*	$Id: common.c,v 1.102 2012/04/22 21:07:41 plunky Exp $	*/
 /*
  * Copyright (c) 2003 Anders Magnusson (ragge@ludd.luth.se).
  * All rights reserved.
@@ -59,6 +59,7 @@
  */
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -151,7 +152,7 @@ werror(char *s, ...)
 bittype warnary[(NUMW/NUMBITS)+1], werrary[(NUMW/NUMBITS)+1];
 
 static char *warntxt[] = {
-	"conversion to '%s' from '%s' may alter its value",
+	"conversion from '%s' to '%s' may alter its value", /* Wtruncate */
 	"function declaration isn't a prototype", /* Wstrict_prototypes */
 	"no previous prototype for `%s'", /* Wmissing_prototypes */
 	"return type defaults to `int'", /* Wimplicit_int */
@@ -177,28 +178,45 @@ char *flagstr[] = {
 void
 Wflags(char *str)
 {
-	int i, flagval;
+	int i, isset, iserr;
 
-	if (strncmp("no-", str, 3) == 0) {
-		str += 3;
-		flagval = 0;
-	} else
-		flagval = 1;
-	if (strcmp(str, "error") == 0) {
-		/* special */
+	/* handle -Werror specially */
+	if (strcmp("error", str) == 0) {
 		for (i = 0; i < NUMW; i++)
 			BITSET(werrary, i);
+
 		return;
 	}
+
+	isset = 1;
+	if (strncmp("no-", str, 3) == 0) {
+		str += 3;
+		isset = 0;
+	}
+
+	iserr = 0;
+	if (strncmp("error=", str, 6) == 0) {
+		str += 6;
+		iserr = 1;
+	}
+
 	for (i = 0; i < NUMW; i++) {
 		if (strcmp(flagstr[i], str) != 0)
 			continue;
-		if (flagval)
+
+		if (isset) {
+			if (iserr)
+				BITSET(werrary, i);
 			BITSET(warnary, i);
-		else
+		} else if (iserr) {
+			BITCLEAR(werrary, i);
+		} else {
 			BITCLEAR(warnary, i);
+		}
+
 		return;
 	}
+
 	fprintf(stderr, "unrecognised warning option '%s'\n", str);
 }
 
@@ -229,11 +247,11 @@ warner(int type, ...)
 
 #ifndef MKEXT
 static NODE *freelink;
-static int usednodes;
+int usednodes;
 
 #ifndef LANG_F77
 NODE *
-talloc()
+talloc(void)
 {
 	register NODE *p;
 
@@ -244,14 +262,14 @@ talloc()
 		freelink = p->next;
 		if (p->n_op != FREE)
 			cerror("node not FREE: %p", p);
-		if (nflag)
+		if (ndebug)
 			printf("alloc node %p from freelist\n", p);
 		return p;
 	}
 
 	p = permalloc(sizeof(NODE));
 	p->n_op = FREE;
-	if (nflag)
+	if (ndebug)
 		printf("alloc node %p from memory\n", p);
 	return p;
 }
@@ -283,7 +301,7 @@ tcopy(NODE *p)
  * ensure that all nodes have been freed
  */
 void
-tcheck()
+tcheck(void)
 {
 	extern int inlnodecnt;
 
@@ -332,7 +350,7 @@ nfree(NODE *p)
 	}
 #endif
 
-	if (nflag)
+	if (ndebug)
 		printf("freeing node %p\n", p);
 	p->n_op = FREE;
 	p->next = freelink;
@@ -464,7 +482,7 @@ struct dopest {
 };
 
 void
-mkdope()
+mkdope(void)
 {
 	struct dopest *q;
 
@@ -482,7 +500,7 @@ tprint(FILE *fp, TWORD t, TWORD q)
 {
 	static char * tnames[] = {
 		"undef",
-		"farg",
+		"bool",
 		"char",
 		"uchar",
 		"short",
@@ -502,7 +520,7 @@ tprint(FILE *fp, TWORD t, TWORD q)
 		"moety",
 		"void",
 		"signed", /* pass1 */
-		"bool", /* pass1 */
+		"farg", /* pass1 */
 		"fimag", /* pass1 */
 		"dimag", /* pass1 */
 		"limag", /* pass1 */
@@ -550,7 +568,7 @@ struct balloc {
 	} a2;
 };
 
-#define ALIGNMENT ((long)&((struct balloc *)0)->a2)
+#define	ALIGNMENT offsetof(struct balloc, a2)
 #define	ROUNDUP(x) (((x) + ((ALIGNMENT)-1)) & ~((ALIGNMENT)-1))
 
 static char *allocpole;
@@ -570,7 +588,7 @@ permalloc(int size)
 	if (size <= 0)
 		cerror("permalloc2");
 	if (allocleft < size) {
-		/* looses unused bytes */
+		/* loses unused bytes */
 		lostmem += allocleft;
 		if ((allocpole = malloc(MEMCHUNKSZ)) == NULL)
 			cerror("permalloc: out of memory");
@@ -664,7 +682,7 @@ tmpalloc(int size)
 }
 
 void
-tmpfree()
+tmpfree(void)
 {
 	struct xalloc *x1;
 
@@ -781,4 +799,26 @@ listarg(NODE *p, int n, int *cnt)
 		r = n == 0 ? p : NIL;
 	}
 	return r;
+}
+
+/*
+ * Make a type unsigned, if possible.
+ */
+TWORD
+enunsign(TWORD t)
+{
+	if (BTYPE(t) >= CHAR && BTYPE(t) <= ULONGLONG)
+		t |= 1;
+	return t;
+}
+
+/*
+ * Make a type signed, if possible.
+ */
+TWORD
+deunsign(TWORD t)
+{
+	if (BTYPE(t) >= CHAR && BTYPE(t) <= ULONGLONG)
+		t &= ~1;
+	return t;
 }
